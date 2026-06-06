@@ -1,0 +1,74 @@
+# =========================
+# Spring Boot / Java
+# =========================
+target/
+build/
+out/
+*.jar
+*.war
+*.class
+
+# Logs
+*.log
+logs/
+
+# =========================
+# IDEs
+# =========================
+.idea/
+*.iml
+*.iws
+*.ipr
+.vscode/
+
+# =========================
+# OS files
+# =========================
+.DS_Store
+Thumbs.db
+
+# =========================
+# Maven / Gradle wrappers cache
+# =========================
+.mvn/
+.gradle/
+
+# =========================
+# ENV / secrets
+# =========================
+.env
+.env.*
+application-local.yml
+application-dev.yml
+application-prod.yml
+
+# =========================
+# Google Cloud / Auth (MUY IMPORTANTE)
+# =========================
+# ADC credentials (gcloud login)
+application_default_credentials.json
+
+# OAuth / Service Account keys
+*.json
+client_secret*.json
+credentials*.json
+gcp-credentials.json
+
+# Token storage (Gmail OAuth)
+tokens/
+token/
+gmail-tokens/
+
+# gcloud CLI config (opcional)
+.gcloud/
+
+# =========================
+# Temporary / runtime
+# =========================
+tmp/
+temp/
+
+# Others
+
+/storage
+src/main/resources/db

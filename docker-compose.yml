@@ -1,0 +1,54 @@
+version: '3.8'
+
+services:
+  #postgres:
+    #image: postgres:15-alpine
+    #container_name: ansertech-db
+    #environment:
+      #POSTGRES_DB: ansertech_db
+      #POSTGRES_USER: ansertech
+      #POSTGRES_PASSWORD: ${DB_PASSWORD:-ansertech123}
+    #ports:
+      #- "5432:5432"
+    #volumes:
+      #- postgres_data:/var/lib/postgresql/data
+    #healthcheck:
+      #test: ["CMD-SHELL", "pg_isready -U ansertech -d ansertech_db"]
+      #interval: 10s
+      #timeout: 5s
+      #retries: 5
+
+  backend:
+    build: .
+    container_name: ansertech-backend
+    ports:
+      - "8080:8080"
+    environment:
+      SPRING_PROFILE: prod
+      DB_HOST: postgres
+      DB_NAME: ansertech_db
+      DB_USER: ansertech
+      DB_PASSWORD: ${DB_PASSWORD:-admin}
+      GCP_PROJECT_ID: ${GCP_PROJECT_ID}
+      GCP_LOCATION: ${GCP_LOCATION:-us-central1}
+      GOOGLE_APPLICATION_CREDENTIALS: /app/gcp-credentials.json
+      EMAIL_PROVIDER: ${EMAIL_PROVIDER:-gmail}
+      GMAIL_CREDENTIALS_FILE: /app/gmail-credentials.json
+      GMAIL_USER_EMAIL: ${GMAIL_USER_EMAIL}
+      MICROSOFT_TENANT_ID: ${MICROSOFT_TENANT_ID:-}
+      MICROSOFT_CLIENT_ID: ${MICROSOFT_CLIENT_ID:-}
+      MICROSOFT_CLIENT_SECRET: ${MICROSOFT_CLIENT_SECRET:-}
+      ANSERTECH_EMAIL: ${ANSERTECH_EMAIL:-}
+      JWT_SECRET: ${JWT_SECRET}
+      STORAGE_PATH: /app/storage
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./storage:/app/storage
+      - ./gcp-credentials.json:/app/gcp-credentials.json:ro
+      - ./gmail-credentials.json:/app/gmail-credentials.json:ro
+    restart: unless-stopped
+
+volumes:
+  postgres_data:

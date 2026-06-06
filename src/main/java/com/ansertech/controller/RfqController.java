@@ -1,0 +1,90 @@
+package com.ansertech.controller;
+
+import com.ansertech.domain.entity.Rfq;
+import com.ansertech.domain.enums.RfqStatus;
+import com.ansertech.dto.response.ApiResponse;
+import com.ansertech.dto.response.RfqResponse;
+import com.ansertech.exception.ResourceNotFoundException;
+import com.ansertech.repository.RfqRepository;
+import com.ansertech.service.quotation.QuotationService;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
+import lombok.RequiredArgsConstructor;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.web.PageableDefault;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+
+import java.util.Map;
+import java.util.stream.Collectors;
+
+@RestController
+@RequestMapping("/api/rfqs")
+@RequiredArgsConstructor
+@Tag(name = "RFQs", description = "Solicitudes de cotización extraídas")
+public class RfqController {
+
+    private final RfqRepository rfqRepository;
+    private final QuotationService quotationService;
+
+    @GetMapping
+    @Operation(summary = "Listar RFQs con filtro por estado")
+    public ResponseEntity<ApiResponse<Page<RfqResponse>>> list(
+            @RequestParam(required = false) RfqStatus status,
+            @PageableDefault(size = 20) Pageable pageable) {
+        Page<Rfq> page = status != null
+                ? rfqRepository.findByStatusOrderByCreatedAtDesc(status, pageable)
+                : rfqRepository.findAllByOrderByCreatedAtDesc(pageable);
+        return ResponseEntity.ok(ApiResponse.ok(page.map(this::toResponse)));
+    }
+
+    @GetMapping("/{id}")
+    @Operation(summary = "Obtener RFQ por ID")
+    public ResponseEntity<ApiResponse<RfqResponse>> getById(@PathVariable Long id) {
+        return ResponseEntity.ok(ApiResponse.ok(toResponse(findOrThrow(id))));
+    }
+
+    @PatchMapping("/{id}")
+    @Operation(summary = "Actualizar notas/operador del RFQ")
+    public ResponseEntity<ApiResponse<RfqResponse>> update(
+            @PathVariable Long id, @RequestBody Map<String, String> body) {
+        Rfq rfq = findOrThrow(id);
+        if (body.containsKey("notes")) rfq.setNotes(body.get("notes"));
+        rfqRepository.save(rfq);
+        return ResponseEntity.ok(ApiResponse.ok(toResponse(rfq)));
+    }
+
+    @PostMapping("/{id}/confirm")
+    @Operation(summary = "Confirmar RFQ y generar cotización")
+    public ResponseEntity<ApiResponse<String>> confirm(@PathVariable Long id) {
+        Rfq rfq = findOrThrow(id);
+        rfq.setStatus(RfqStatus.IN_PROGRESS);
+        rfqRepository.save(rfq);
+        var quotation = quotationService.generateFromRfq(rfq);
+        return ResponseEntity.ok(ApiResponse.ok(quotation.getQuotationNumber(),
+                "Cotización generada: " + quotation.getQuotationNumber()));
+    }
+
+    private Rfq findOrThrow(Long id) {
+        return rfqRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("RFQ", id));
+    }
+
+    private RfqResponse toResponse(Rfq r) {
+        return RfqResponse.builder()
+                .id(r.getId()).emailId(r.getEmail() != null ? r.getEmail().getId() : null)
+                .rfqType(r.getRfqType()).clientName(r.getClientName())
+                .clientCompany(r.getClientCompany()).clientEmail(r.getClientEmail())
+                .clientPhone(r.getClientPhone()).urgency(r.getUrgency())
+                .extractionConfidence(r.getExtractionConfidence()).status(r.getStatus())
+                .notes(r.getNotes()).conversionProbability(r.getConversionProbability())
+                .items(r.getItems().stream().map(i -> RfqResponse.RfqItemResponse.builder()
+                        .id(i.getId()).productCode(i.getProductCode())
+                        .productDescription(i.getProductDescription())
+                        .quantity(i.getQuantity() != null ? i.getQuantity().doubleValue() : null)
+                        .unit(i.getUnit()).fieldConfidence(i.getFieldConfidence()).build())
+                        .collect(Collectors.toList()))
+                .createdAt(r.getCreatedAt()).updatedAt(r.getUpdatedAt()).build();
+    }
+}

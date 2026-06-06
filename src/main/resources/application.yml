@@ -1,0 +1,80 @@
+spring:
+  application:
+    name: ansertech-backend
+  profiles:
+    active: ${SPRING_PROFILE:dev}
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:5432/${DB_NAME:ansertech_db}
+    username: ${DB_USER:postgres}
+    password: ${DB_PASSWORD:admin}
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        format_sql: true
+        default_schema: public
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+    locations: classpath:db/migration
+  jackson:
+    serialization:
+      write-dates-as-timestamps: false
+    time-zone: America/Lima
+
+server:
+  port: ${SERVER_PORT:8080}
+  servlet:
+    context-path: /
+
+# ===== JWT =====
+jwt:
+  secret: ${JWT_SECRET:ansertechSuperSecretKeyForJWTTokenGeneration2026MinLength256Bits}
+  expiration-ms: ${JWT_EXPIRATION_MS:28800000}  # 8 horas
+
+# ===== Google Vertex AI / Gemini =====
+vertex-ai:
+  project-id: ${GCP_PROJECT_ID:ansertech-rfq-prod}
+  location: ${GCP_LOCATION:us-central1}
+  model: gemini-2.5-flash
+  #credentials-file: ${GOOGLE_APPLICATION_CREDENTIALS:./gcp-credentials.json}
+
+# ===== Email — IMAP (Gmail App Password / Outlook App Password) =====
+email:
+  imap:
+    host: ${EMAIL_IMAP_HOST:imap.gmail.com}
+    port: ${EMAIL_IMAP_PORT:993}
+    username: ${EMAIL_IMAP_USERNAME:}
+    password: ${EMAIL_IMAP_PASSWORD:}
+  polling:
+    enabled: ${EMAIL_POLLING_ENABLED:false}
+    fixed-delay-ms: ${EMAIL_POLLING_DELAY_MS:120000}  # 2 minutos
+    max-results: 50
+  classification:
+    confidence-threshold: 0.85
+
+# ===== Almacenamiento PDF =====
+storage:
+  base-path: ${STORAGE_PATH:./storage}
+  quotations-dir: quotations
+
+# ===== CORS =====
+cors:
+  allowed-origins: ${CORS_ORIGINS:http://localhost:4200}
+
+# ===== Springdoc / Swagger =====
+springdoc:
+  api-docs:
+    path: /api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+    tags-sorter: alpha
+
+logging:
+  level:
+    com.ansertech: ${LOG_LEVEL:INFO}
+    org.springframework.security: WARN
