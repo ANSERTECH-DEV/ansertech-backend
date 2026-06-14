@@ -31,16 +31,12 @@ public class Quotation {
     @Builder.Default
     private QuotationStatus status = QuotationStatus.DRAFT;
 
-    @Column(precision = 12, scale = 2)
     private BigDecimal subtotal;
 
-    @Column(precision = 12, scale = 2)
     private BigDecimal igv;
 
-    @Column(precision = 12, scale = 2)
     private BigDecimal total;
 
-    @Column(length = 10)
     @Builder.Default
     private String currency = "PEN";
 
@@ -57,7 +53,7 @@ public class Quotation {
     @Column(name = "ai_summary", columnDefinition = "TEXT")
     private String aiSummary;
 
-    @Column(name = "conversion_probability", precision = 5, scale = 4)
+    @Column(name = "conversion_probability")
     private Double conversionProbability;
 
     @Column(name = "ai_alerts_json", columnDefinition = "TEXT")

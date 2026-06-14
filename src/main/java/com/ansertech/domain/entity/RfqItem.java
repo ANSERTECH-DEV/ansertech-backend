@@ -24,7 +24,6 @@ public class RfqItem {
     @Column(name = "product_description", columnDefinition = "TEXT")
     private String productDescription;
 
-    @Column(precision = 10, scale = 3)
     private BigDecimal quantity;
 
     @Column(length = 50)
@@ -33,7 +32,7 @@ public class RfqItem {
     @Column(name = "service_type")
     private String serviceType;
 
-    @Column(name = "field_confidence", precision = 5, scale = 4)
+    @Column(name = "field_confidence")
     private Double fieldConfidence;
 
     @Column(columnDefinition = "TEXT")

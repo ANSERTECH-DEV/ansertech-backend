@@ -39,7 +39,7 @@ public class Email {
     @Builder.Default
     private EmailStatus status = EmailStatus.PENDING;
 
-    @Column(name = "spam_confidence", precision = 5, scale = 4)
+    @Column(name = "spam_confidence")
     private Double spamConfidence;
 
     @Column(name = "classification_reason", columnDefinition = "TEXT")

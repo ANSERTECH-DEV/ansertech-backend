@@ -28,16 +28,16 @@ public class EmailPipelineScheduler {
     private final EmailRepository emailRepository;
     private final ObjectMapper objectMapper;
 
-    @Value("${email.polling.enabled:false}")
+    @Value("${microsoft.polling.enabled:false}")
     private boolean pollingEnabled;
 
-    @Value("${email.polling.max-results:50}")
+    @Value("${microsoft.polling.max-messages-per-poll:50}")
     private int maxResults;
 
-    @Scheduled(fixedDelayString = "${email.polling.fixed-delay-ms:120000}")
+    @Scheduled(fixedDelayString = "${microsoft.polling.fixed-delay-ms:120000}")
     public void runPipeline() {
         if (!pollingEnabled) {
-            log.debug("Polling de correos deshabilitado (email.polling.enabled=false)");
+            log.debug("Polling de correos deshabilitado (microsoft.polling.enabled=false)");
             return;
         }
         log.info("Iniciando polling de correos — {}", LocalDateTime.now());

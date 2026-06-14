@@ -13,7 +13,6 @@ import com.google.protobuf.Struct;
 import com.google.protobuf.Value;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
@@ -32,7 +31,7 @@ public class GeminiService {
     private final InventoryService inventoryService;
     private final ObjectMapper objectMapper;
 
-    @Value("${vertex-ai.model}")
+    @org.springframework.beans.factory.annotation.Value("${vertex-ai.model}")
     private String modelName;
 
     private static final String CLASSIFICATION_PROMPT = """
