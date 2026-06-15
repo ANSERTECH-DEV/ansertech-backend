@@ -83,13 +83,9 @@ public class EmailPipelineScheduler {
         try {
             EmailStatus status = classificationService.classify(email);
 
-            if (status == EmailStatus.VALID || status == EmailStatus.UNCERTAIN) {
+            if (status == EmailStatus.VALID) {
                 var rfq = rfqExtractionService.extractAndSave(email, raw.attachments());
                 log.info("RFQ {} creado desde email {}", rfq.getId(), email.getId());
-
-                if (status == EmailStatus.VALID) {
-                    quotationService.generateFromRfq(rfq);
-                }
             }
 
             pollingService.markAsRead(raw.externalId());

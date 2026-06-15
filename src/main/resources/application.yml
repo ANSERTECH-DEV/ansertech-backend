@@ -25,10 +25,10 @@ jwt:
 
 # ===== Google Vertex AI / Gemini =====
 vertex-ai:
-  project-id: ${GCP_PROJECT_ID:ansertech-rfq-prod}
-  location: ${GCP_LOCATION:us-central1}
+  project-id: ${GCP_PROJECT_ID}
+  location: ${GCP_LOCATION}
   model: gemini-2.5-flash
-  #credentials-file: ${GOOGLE_APPLICATION_CREDENTIALS:./gcp-credentials.json}
+  credentials-file: ${GOOGLE_APPLICATION_CREDENTIALS}
 
 # ===== Microsoft OAuth2 & Graph API =====
 spring.security.oauth2.client.registration.microsoft.client-id: ${GRAPH_CLIENT_ID:}
@@ -49,25 +49,13 @@ microsoft:
     tenant-id: ${GRAPH_TENANT_ID:consumers}
 
   polling:
-    enabled: true
+    enabled: false
     fixed-delay-ms: 120000
     initial-delay-ms: 10000
     max-messages-per-poll: 5
 
   classification:
     confidence-threshold: 0.85
-#email:
-  #imap:
-    #host: ${EMAIL_IMAP_HOST:imap.gmail.com}
-    #port: ${EMAIL_IMAP_PORT:993}
-    #username: ${EMAIL_IMAP_USERNAME:}
-    #password: ${EMAIL_IMAP_PASSWORD:}
-  #polling:
-    #enabled: ${EMAIL_POLLING_ENABLED:false}
-    #fixed-delay-ms: ${EMAIL_POLLING_DELAY_MS:120000}  # 2 minutos
-    #max-results: 50
-  #classification:
-    #confidence-threshold: 0.85
 
 # ===== Almacenamiento PDF =====
 storage:

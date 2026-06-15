@@ -16,6 +16,7 @@ import org.springframework.data.web.PageableDefault;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
@@ -33,9 +34,13 @@ public class RfqController {
     public ResponseEntity<ApiResponse<Page<RfqResponse>>> list(
             @RequestParam(required = false) RfqStatus status,
             @PageableDefault(size = 20) Pageable pageable) {
-        Page<Rfq> page = status != null
-                ? rfqRepository.findByStatusOrderByCreatedAtDesc(status, pageable)
-                : rfqRepository.findAllByOrderByCreatedAtDesc(pageable);
+        Page<Rfq> page;
+        if (status != null) {
+            page = rfqRepository.findByStatusOrderByCreatedAtDesc(status, pageable);
+        } else {
+            page = rfqRepository.findByStatusInOrderByCreatedAtDesc(
+                    List.of(RfqStatus.PENDING_REVIEW, RfqStatus.IN_PROGRESS), pageable);
+        }
         return ResponseEntity.ok(ApiResponse.ok(page.map(this::toResponse)));
     }
 

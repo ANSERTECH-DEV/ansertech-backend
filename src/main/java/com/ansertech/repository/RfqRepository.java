@@ -12,6 +12,7 @@ import java.util.List;
 @Repository
 public interface RfqRepository extends JpaRepository<Rfq, Long> {
     Page<Rfq> findByStatusOrderByCreatedAtDesc(RfqStatus status, Pageable pageable);
+    Page<Rfq> findByStatusInOrderByCreatedAtDesc(List<RfqStatus> statuses, Pageable pageable);
     Page<Rfq> findAllByOrderByCreatedAtDesc(Pageable pageable);
 
     @Query("SELECT COUNT(r) FROM Rfq r WHERE r.status = :status")
