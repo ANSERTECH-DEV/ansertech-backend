@@ -1,5 +1,8 @@
 package com.ansertech.service.ai;
 
+import com.ansertech.domain.entity.Product;
+import com.ansertech.domain.entity.RfqItem;
+import com.ansertech.dto.response.StockCheckItemResponse;
 import com.ansertech.service.inventory.InventoryService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -16,7 +19,9 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
+import java.math.BigDecimal;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.regex.Matcher;
@@ -272,6 +277,128 @@ public class GeminiService {
             log.error("Error llamando a Gemini: {}", e.getMessage());
             return objectMapper.createObjectNode().put("error", e.getMessage());
         }
+    }
+
+    private static final String STOCK_MATCH_PROMPT = """
+            Eres un asistente especializado en matching de productos industriales para Ansertech Perú S.A.C.
+
+            Tu tarea: para cada ítem de la RFQ, encuentra el producto del catálogo con mayor similitud semántica.
+            Compara la descripción del ítem con el campo "description" (descripción larga) de cada producto del catálogo.
+            Entiende sinónimos, abreviaciones, variaciones de redacción técnica en español e inglés, y plurales.
+
+            ÍTEMS SOLICITADOS EN LA RFQ:
+            %s
+
+            CATÁLOGO DE PRODUCTOS (id, sku, nombre, descripción completa, stock_actual, unidad):
+            %s
+
+            Responde ÚNICAMENTE con un array JSON, un objeto por cada ítem de la RFQ:
+            [
+              {
+                "rfq_item_id": 1,
+                "rfq_description": "descripción original del ítem",
+                "quantity_requested": 45.0,
+                "unit_requested": "unidad",
+                "matched": true,
+                "product_id": 1,
+                "product_sku": "CAM-IP-001",
+                "product_name": "Cámara IP industrial",
+                "similarity_score": 0.92,
+                "match_reason": "Coincidencia por descripción de cámara IP para uso industrial",
+                "stock_quantity": 60.0,
+                "stock_unit": "unidad",
+                "stock_sufficient": true
+              }
+            ]
+
+            Reglas:
+            - Si un ítem no tiene coincidencia clara (similitud < 0.4), usa matched=false y omite campos de producto.
+            - stock_sufficient = true cuando stock_quantity >= quantity_requested.
+            - similarity_score entre 0.0 y 1.0.
+            - Incluye TODOS los ítems de la RFQ en el array de respuesta.
+            """;
+
+    public List<StockCheckItemResponse> matchRfqItemsToProducts(List<RfqItem> rfqItems, List<Product> products) {
+        try {
+            String rfqItemsJson = buildRfqItemsJson(rfqItems);
+            String catalogJson  = buildProductCatalogJson(products);
+            String prompt = String.format(STOCK_MATCH_PROMPT, rfqItemsJson, catalogJson);
+
+            JsonNode result = callGemini(prompt);
+            return parseStockCheckResult(result, rfqItems);
+        } catch (Exception e) {
+            log.error("Error en matching de stock: {}", e.getMessage());
+            return buildFallbackStockCheck(rfqItems);
+        }
+    }
+
+    private String buildRfqItemsJson(List<RfqItem> items) throws Exception {
+        List<Map<String, Object>> list = new ArrayList<>();
+        for (RfqItem item : items) {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("id",          item.getId());
+            m.put("description", item.getProductDescription() != null ? item.getProductDescription() : "");
+            m.put("quantity",    item.getQuantity() != null ? item.getQuantity().doubleValue() : 1.0);
+            m.put("unit",        item.getUnit() != null ? item.getUnit() : "unidad");
+            list.add(m);
+        }
+        return objectMapper.writeValueAsString(list);
+    }
+
+    private String buildProductCatalogJson(List<Product> products) throws Exception {
+        List<Map<String, Object>> list = new ArrayList<>();
+        for (Product p : products) {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("id",          p.getId());
+            m.put("sku",         p.getSku());
+            m.put("name",        p.getName());
+            m.put("description", p.getDescription() != null ? p.getDescription() : "");
+            m.put("stock",       p.getStockQuantity() != null ? p.getStockQuantity() : BigDecimal.ZERO);
+            m.put("unit",        p.getUnit() != null ? p.getUnit() : "unidad");
+            list.add(m);
+        }
+        return objectMapper.writeValueAsString(list);
+    }
+
+    private List<StockCheckItemResponse> parseStockCheckResult(JsonNode root, List<RfqItem> rfqItems) {
+        List<StockCheckItemResponse> result = new ArrayList<>();
+        if (!root.isArray()) return buildFallbackStockCheck(rfqItems);
+        for (JsonNode node : root) {
+            boolean matched = node.path("matched").asBoolean(false);
+            StockCheckItemResponse.StockCheckItemResponseBuilder builder = StockCheckItemResponse.builder()
+                    .rfqItemId(node.path("rfq_item_id").asLong(0))
+                    .rfqDescription(node.path("rfq_description").asText(""))
+                    .quantityRequested(node.path("quantity_requested").asDouble(1.0))
+                    .unitRequested(node.path("unit_requested").asText("unidad"))
+                    .matched(matched);
+            if (matched) {
+                builder
+                    .productId(node.path("product_id").asLong(0))
+                    .productSku(node.path("product_sku").asText(""))
+                    .productName(node.path("product_name").asText(""))
+                    .similarityScore(node.path("similarity_score").asDouble(0.0))
+                    .matchReason(node.path("match_reason").asText(""))
+                    .stockQuantity(BigDecimal.valueOf(node.path("stock_quantity").asDouble(0.0)))
+                    .stockUnit(node.path("stock_unit").asText("unidad"))
+                    .stockSufficient(node.path("stock_sufficient").asBoolean(false));
+            }
+            result.add(builder.build());
+        }
+        return result;
+    }
+
+    private List<StockCheckItemResponse> buildFallbackStockCheck(List<RfqItem> rfqItems) {
+        List<StockCheckItemResponse> result = new ArrayList<>();
+        for (RfqItem item : rfqItems) {
+            result.add(StockCheckItemResponse.builder()
+                    .rfqItemId(item.getId())
+                    .rfqDescription(item.getProductDescription() != null ? item.getProductDescription() : "")
+                    .quantityRequested(item.getQuantity() != null ? item.getQuantity().doubleValue() : 1.0)
+                    .unitRequested(item.getUnit() != null ? item.getUnit() : "unidad")
+                    .matched(false)
+                    .build());
+        }
+        return result;
     }
 
     private JsonNode parseJson(String raw) {

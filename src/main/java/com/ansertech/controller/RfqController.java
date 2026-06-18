@@ -1,11 +1,15 @@
 package com.ansertech.controller;
 
+import com.ansertech.domain.entity.Product;
 import com.ansertech.domain.entity.Rfq;
 import com.ansertech.domain.enums.RfqStatus;
 import com.ansertech.dto.response.ApiResponse;
 import com.ansertech.dto.response.RfqResponse;
+import com.ansertech.dto.response.StockCheckItemResponse;
 import com.ansertech.exception.ResourceNotFoundException;
+import com.ansertech.repository.ProductRepository;
 import com.ansertech.repository.RfqRepository;
+import com.ansertech.service.ai.GeminiService;
 import com.ansertech.service.quotation.QuotationService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -28,6 +32,8 @@ public class RfqController {
 
     private final RfqRepository rfqRepository;
     private final QuotationService quotationService;
+    private final ProductRepository productRepository;
+    private final GeminiService geminiService;
 
     @GetMapping
     @Operation(summary = "Listar RFQs con filtro por estado")
@@ -69,6 +75,15 @@ public class RfqController {
         var quotation = quotationService.generateFromRfq(rfq);
         return ResponseEntity.ok(ApiResponse.ok(quotation.getId(),
                 "Cotización generada: " + quotation.getQuotationNumber()));
+    }
+
+    @GetMapping("/{id}/stock-check")
+    @Operation(summary = "Verificar stock de ítems del RFQ usando matching semántico con IA")
+    public ResponseEntity<ApiResponse<List<StockCheckItemResponse>>> stockCheck(@PathVariable Long id) {
+        Rfq rfq = findOrThrow(id);
+        List<Product> allProducts = productRepository.findAllActive();
+        List<StockCheckItemResponse> result = geminiService.matchRfqItemsToProducts(rfq.getItems(), allProducts);
+        return ResponseEntity.ok(ApiResponse.ok(result));
     }
 
     @PostMapping("/{id}/reject")
