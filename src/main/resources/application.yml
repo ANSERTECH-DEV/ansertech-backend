@@ -52,7 +52,7 @@ microsoft:
     enabled: false
     fixed-delay-ms: 120000
     initial-delay-ms: 10000
-    max-messages-per-poll: 5
+    max-messages-per-poll: 2
 
   classification:
     confidence-threshold: 0.85

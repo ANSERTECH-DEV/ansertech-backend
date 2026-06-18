@@ -62,13 +62,22 @@ public class RfqController {
 
     @PostMapping("/{id}/confirm")
     @Operation(summary = "Confirmar RFQ y generar cotización")
-    public ResponseEntity<ApiResponse<String>> confirm(@PathVariable Long id) {
+    public ResponseEntity<ApiResponse<Long>> confirm(@PathVariable Long id) {
         Rfq rfq = findOrThrow(id);
         rfq.setStatus(RfqStatus.IN_PROGRESS);
         rfqRepository.save(rfq);
         var quotation = quotationService.generateFromRfq(rfq);
-        return ResponseEntity.ok(ApiResponse.ok(quotation.getQuotationNumber(),
+        return ResponseEntity.ok(ApiResponse.ok(quotation.getId(),
                 "Cotización generada: " + quotation.getQuotationNumber()));
+    }
+
+    @PostMapping("/{id}/reject")
+    @Operation(summary = "Rechazar RFQ sin generar cotización")
+    public ResponseEntity<ApiResponse<String>> reject(@PathVariable Long id) {
+        Rfq rfq = findOrThrow(id);
+        rfq.setStatus(RfqStatus.REJECTED);
+        rfqRepository.save(rfq);
+        return ResponseEntity.ok(ApiResponse.ok("REJECTED", "RFQ #" + id + " rechazado"));
     }
 
     private Rfq findOrThrow(Long id) {

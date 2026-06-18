@@ -23,8 +23,10 @@ import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 @Slf4j
@@ -156,7 +158,7 @@ public class QuotationService {
             List<java.util.Map<String, Object>> results = rfq.getItems().stream().map(item -> {
                 String desc = item.getProductDescription() != null ? item.getProductDescription() : "";
                 double qty = item.getQuantity() != null ? item.getQuantity().doubleValue() : 1.0;
-                List<Product> matches = productRepository.findByDescriptionLike(desc);
+                List<Product> matches = findBestProductMatch(desc);
                 if (matches.isEmpty()) {
                     return java.util.Map.<String, Object>of("description", desc, "found", false);
                 }
@@ -175,6 +177,39 @@ public class QuotationService {
         } catch (Exception e) {
             return "[]";
         }
+    }
+
+    private static final Set<String> STOP_WORDS = Set.of(
+            "de", "del", "el", "la", "los", "las", "con", "para", "por", "en",
+            "un", "una", "y", "o", "a", "al", "suministro", "provision", "provisión",
+            "compra", "adquisición", "adquisicion", "instalacion", "instalación"
+    );
+
+    private List<Product> findBestProductMatch(String desc) {
+        List<Product> matches = productRepository.findByDescriptionLike(desc);
+        if (!matches.isEmpty()) return matches;
+
+        String[] words = desc.split("[\\s,./()]+");
+        List<String> keywords = Arrays.stream(words)
+                .map(w -> w.toLowerCase().replaceAll("[^a-záéíóúüñ]", ""))
+                .filter(w -> w.length() > 3 && !STOP_WORDS.contains(w) && !w.matches("\\d+"))
+                .sorted((a, b) -> b.length() - a.length())
+                .distinct()
+                .collect(Collectors.toList());
+
+        for (String keyword : keywords) {
+            matches = productRepository.findByDescriptionLike(keyword);
+            if (!matches.isEmpty()) return matches;
+            // Prueba forma singular en español (quitar -es o -s)
+            if (keyword.endsWith("es") && keyword.length() > 5) {
+                matches = productRepository.findByDescriptionLike(keyword.substring(0, keyword.length() - 2));
+                if (!matches.isEmpty()) return matches;
+            } else if (keyword.endsWith("s") && keyword.length() > 4) {
+                matches = productRepository.findByDescriptionLike(keyword.substring(0, keyword.length() - 1));
+                if (!matches.isEmpty()) return matches;
+            }
+        }
+        return List.of();
     }
 
     private String generateQuotationNumber() {

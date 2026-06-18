@@ -34,15 +34,14 @@ public class SecurityConfig {
         http
             .cors(cors -> cors.configurationSource(corsConfigurationSource))
             .csrf(AbstractHttpConfigurer::disable)
-            .sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.IF_REQUIRED))
+            .sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .authorizeHttpRequests(auth -> auth
                 .requestMatchers("/api/auth/**").permitAll()
                 .requestMatchers("/swagger-ui/**", "/api-docs/**", "/swagger-ui.html").permitAll()
-                .requestMatchers("/api/inventory/**").hasAnyRole("ADMIN", "OPERATOR")
                 .requestMatchers("/api/inventory/*/stock").hasRole("ADMIN")
+                .requestMatchers("/api/inventory/**").hasAnyRole("ADMIN", "OPERATOR")
                 .anyRequest().authenticated()
             )
-            .oauth2Login(org.springframework.security.config.Customizer.withDefaults())
             .addFilterBefore(jwtFilter, UsernamePasswordAuthenticationFilter.class);
 
         return http.build();

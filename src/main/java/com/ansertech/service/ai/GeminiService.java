@@ -97,10 +97,18 @@ public class GeminiService {
             3. Alertas si hay productos sin stock o stock bajo
             4. Recomendaciones comerciales
 
+            INSTRUCCIONES IMPORTANTES SOBRE PRECIOS:
+            - Para cada ítem del RFQ, DEBES llamar a check_inventory con el nombre probable del producto.
+            - Usa el campo "unit_price" retornado por check_inventory como el "unit_price" del ítem.
+            - Calcula "subtotal" = quantity * unit_price.
+            - Si check_inventory devuelve found=false, usa availability_status "ON_ORDER" y unit_price 0.
+            - NUNCA pongas unit_price en 0 si check_inventory encontró el producto con precio.
+            - Usa palabras clave cortas al llamar check_inventory (ej: "cámara IP", no la frase completa).
+
             RFQ:
             %s
 
-            Resultados de inventario:
+            Resultados de inventario (pre-búsqueda, puede estar incompleto):
             %s
 
             Responde ÚNICAMENTE en formato JSON:
