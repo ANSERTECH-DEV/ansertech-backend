@@ -325,7 +325,7 @@ public class GeminiService {
             String prompt = String.format(STOCK_MATCH_PROMPT, rfqItemsJson, catalogJson);
 
             JsonNode result = callGemini(prompt);
-            return parseStockCheckResult(result, rfqItems);
+            return parseStockCheckResult(result, rfqItems, products);
         } catch (Exception e) {
             log.error("Error en matching de stock: {}", e.getMessage());
             return buildFallbackStockCheck(rfqItems);
@@ -360,9 +360,11 @@ public class GeminiService {
         return objectMapper.writeValueAsString(list);
     }
 
-    private List<StockCheckItemResponse> parseStockCheckResult(JsonNode root, List<RfqItem> rfqItems) {
+    private List<StockCheckItemResponse> parseStockCheckResult(JsonNode root, List<RfqItem> rfqItems, List<Product> products) {
         List<StockCheckItemResponse> result = new ArrayList<>();
         if (!root.isArray()) return buildFallbackStockCheck(rfqItems);
+        Map<Long, Product> productsById = new java.util.HashMap<>();
+        for (Product p : products) productsById.put(p.getId(), p);
         for (JsonNode node : root) {
             boolean matched = node.path("matched").asBoolean(false);
             StockCheckItemResponse.StockCheckItemResponseBuilder builder = StockCheckItemResponse.builder()
@@ -372,15 +374,18 @@ public class GeminiService {
                     .unitRequested(node.path("unit_requested").asText("unidad"))
                     .matched(matched);
             if (matched) {
+                long productId = node.path("product_id").asLong(0);
+                Product product = productsById.get(productId);
                 builder
-                    .productId(node.path("product_id").asLong(0))
+                    .productId(productId)
                     .productSku(node.path("product_sku").asText(""))
                     .productName(node.path("product_name").asText(""))
                     .similarityScore(node.path("similarity_score").asDouble(0.0))
                     .matchReason(node.path("match_reason").asText(""))
                     .stockQuantity(BigDecimal.valueOf(node.path("stock_quantity").asDouble(0.0)))
                     .stockUnit(node.path("stock_unit").asText("unidad"))
-                    .stockSufficient(node.path("stock_sufficient").asBoolean(false));
+                    .stockSufficient(node.path("stock_sufficient").asBoolean(false))
+                    .unitPrice(product != null ? product.getUnitPrice() : null);
             }
             result.add(builder.build());
         }

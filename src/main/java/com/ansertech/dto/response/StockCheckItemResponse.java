@@ -21,4 +21,5 @@ public class StockCheckItemResponse {
     private BigDecimal stockQuantity;
     private String stockUnit;
     private boolean stockSufficient;
+    private BigDecimal unitPrice;
 }
