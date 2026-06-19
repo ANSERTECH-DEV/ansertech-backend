@@ -28,6 +28,16 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.format.DateTimeFormatter;
 
+import com.azure.identity.DefaultAzureCredentialBuilder;
+import com.azure.storage.blob.BlobClient;
+import com.azure.storage.blob.BlobContainerClient;
+import com.azure.storage.blob.BlobServiceClient;
+import com.azure.storage.blob.BlobServiceClientBuilder;
+import com.azure.storage.blob.models.BlobHttpHeaders;
+
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+
 @Slf4j
 @Service
 @RequiredArgsConstructor
@@ -40,32 +50,54 @@ public class QuotationPdfService {
 
     private final QuotationRepository quotationRepository;
 
-    @Value("${storage.base-path:./storage}")
-    private String storagePath;
+    @Value("${azure.storage.endpoint}")
+    private String storageEndpoint;
+
+    @Value("${azure.storage.container-name:quotations}")
+    private String containerName;
 
     @Transactional
     public String generateAndStore(Quotation quotation) {
         try {
-            Path dir = Paths.get(storagePath, "quotations",
-                    String.valueOf(quotation.getCreatedAt().getYear()),
-                    String.format("%02d", quotation.getCreatedAt().getMonthValue()));
-            Files.createDirectories(dir);
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            buildPdf(quotation, baos);
+            byte[] pdfBytes = baos.toByteArray();
 
-            Path filePath = dir.resolve(quotation.getQuotationNumber() + ".pdf");
-            buildPdf(quotation, filePath.toString());
+            BlobServiceClient blobServiceClient = new BlobServiceClientBuilder()
+                    .endpoint(storageEndpoint)
+                    .credential(new DefaultAzureCredentialBuilder().build())
+                    .buildClient();
 
-            quotation.setPdfPath(filePath.toString());
+            BlobContainerClient containerClient = blobServiceClient.getBlobContainerClient(containerName);
+            if (!containerClient.exists()) {
+                containerClient.create();
+            }
+
+            String blobName = String.format("%d/%02d/%s.pdf",
+                    quotation.getCreatedAt().getYear(),
+                    quotation.getCreatedAt().getMonthValue(),
+                    quotation.getQuotationNumber());
+
+            BlobClient blobClient = containerClient.getBlobClient(blobName);
+            blobClient.upload(new ByteArrayInputStream(pdfBytes), pdfBytes.length, true);
+            
+            BlobHttpHeaders headers = new BlobHttpHeaders().setContentType("application/pdf");
+            blobClient.setHttpHeaders(headers);
+
+            String pdfUrl = blobClient.getBlobUrl();
+            quotation.setPdfPath(pdfUrl);
             quotationRepository.save(quotation);
-            log.info("PDF generado: {}", filePath);
-            return filePath.toString();
+            
+            log.info("PDF generado y subido a Azure: {}", pdfUrl);
+            return pdfUrl;
         } catch (Exception e) {
-            log.error("Error generando PDF para {}: {}", quotation.getQuotationNumber(), e.getMessage());
+            log.error("Error generando/subiendo PDF para {}: {}", quotation.getQuotationNumber(), e.getMessage());
             throw new RuntimeException("Error generando PDF", e);
         }
     }
 
-    private void buildPdf(Quotation quotation, String filePath) throws IOException {
-        try (PdfDocument pdf = new PdfDocument(new PdfWriter(filePath));
+    private void buildPdf(Quotation quotation, ByteArrayOutputStream baos) throws IOException {
+        try (PdfDocument pdf = new PdfDocument(new PdfWriter(baos));
              Document doc = new Document(pdf)) {
 
             PdfFont bold = PdfFontFactory.createFont("Helvetica-Bold");
