@@ -9,6 +9,7 @@ import com.ansertech.exception.ResourceNotFoundException;
 import com.ansertech.repository.ProductRepository;
 import com.ansertech.repository.QuotationRepository;
 import com.ansertech.service.ai.GeminiService;
+import com.ansertech.service.email.EmailSenderService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
@@ -40,6 +41,7 @@ public class QuotationService {
     private final ProductRepository productRepository;
     private final GeminiService geminiService;
     private final QuotationPdfService pdfService;
+    private final EmailSenderService emailSenderService;
     private final ObjectMapper objectMapper;
 
     public Quotation generateFromRfq(Rfq rfq) {
@@ -54,10 +56,41 @@ public class QuotationService {
 
             pdfService.generateAndStore(quotation);
             log.info("Cotización {} generada para RFQ {}", quotation.getQuotationNumber(), rfq.getId());
+
+            sendEmailToClient(quotation, rfq);
+
             return quotation;
         } catch (Exception e) {
             log.error("Error generando cotización para RFQ {}: {}", rfq.getId(), e.getMessage());
             return buildMinimalQuotation(rfq);
+        }
+    }
+
+    private void sendEmailToClient(Quotation quotation, Rfq rfq) {
+        String clientEmail = rfq.getClientEmail();
+        if (clientEmail == null || clientEmail.isBlank()) {
+            log.warn("RFQ {} sin correo de cliente — cotización {} no enviada por email",
+                    rfq.getId(), quotation.getQuotationNumber());
+            return;
+        }
+        if (quotation.getPdfPath() == null) {
+            log.warn("Cotización {} sin PDF — no se puede enviar email", quotation.getQuotationNumber());
+            return;
+        }
+        try {
+            byte[] pdfBytes = pdfService.downloadPdf(quotation.getPdfPath());
+            emailSenderService.sendQuotationEmail(
+                    clientEmail, rfq.getClientName(), quotation.getQuotationNumber(),
+                    quotation.getAiSummary(), quotation.getSubtotal(),
+                    quotation.getIgv(), quotation.getTotal(), pdfBytes
+            );
+            quotation.setStatus(QuotationStatus.SENT);
+            quotation.setSentAt(LocalDateTime.now());
+            quotationRepository.save(quotation);
+            log.info("Email enviado a {} — cotización {}", clientEmail, quotation.getQuotationNumber());
+        } catch (Exception e) {
+            log.error("Error enviando email para cotización {} — queda en DRAFT: {}",
+                    quotation.getQuotationNumber(), e.getMessage());
         }
     }
 
@@ -76,7 +109,18 @@ public class QuotationService {
     public QuotationResponse markAsSent(Long id) {
         Quotation q = findOrThrow(id);
         if (q.getStatus() == QuotationStatus.SENT) {
-            throw new BusinessException("La cotización ya fue enviada");
+            log.info("Reenvío manual de cotización {} a {}", q.getQuotationNumber(),
+                    q.getRfq() != null ? q.getRfq().getClientEmail() : "desconocido");
+        }
+        if (q.getRfq() != null && q.getRfq().getClientEmail() != null && q.getPdfPath() != null) {
+            byte[] pdfBytes = pdfService.downloadPdf(q.getPdfPath());
+            emailSenderService.sendQuotationEmail(
+                    q.getRfq().getClientEmail(), q.getRfq().getClientName(),
+                    q.getQuotationNumber(), q.getAiSummary(),
+                    q.getSubtotal(), q.getIgv(), q.getTotal(), pdfBytes
+            );
+        } else {
+            log.warn("Cotización {} sin correo de cliente o PDF", q.getQuotationNumber());
         }
         q.setStatus(QuotationStatus.SENT);
         q.setSentAt(LocalDateTime.now());

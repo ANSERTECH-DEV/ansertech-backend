@@ -56,6 +56,29 @@ public class QuotationPdfService {
     @Value("${azure.storage.container-name:quotations}")
     private String containerName;
 
+    public byte[] downloadPdf(String blobUrl) {
+        try {
+            String prefix = storageEndpoint + "/" + containerName + "/";
+            String blobName = blobUrl.startsWith(prefix)
+                    ? blobUrl.substring(prefix.length())
+                    : blobUrl.substring(blobUrl.lastIndexOf(containerName + "/") + containerName.length() + 1);
+
+            BlobServiceClient blobServiceClient = new BlobServiceClientBuilder()
+                    .endpoint(storageEndpoint)
+                    .credential(new DefaultAzureCredentialBuilder().build())
+                    .buildClient();
+
+            return blobServiceClient
+                    .getBlobContainerClient(containerName)
+                    .getBlobClient(blobName)
+                    .downloadContent()
+                    .toBytes();
+        } catch (Exception e) {
+            log.error("Error descargando PDF desde Azure Blob: {}", e.getMessage());
+            throw new RuntimeException("No se pudo descargar el PDF", e);
+        }
+    }
+
     @Transactional
     public String generateAndStore(Quotation quotation) {
         try {

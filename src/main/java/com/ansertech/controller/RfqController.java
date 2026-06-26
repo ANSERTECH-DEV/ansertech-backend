@@ -67,14 +67,19 @@ public class RfqController {
     }
 
     @PostMapping("/{id}/confirm")
-    @Operation(summary = "Confirmar RFQ y generar cotización")
+    @Operation(summary = "Confirmar RFQ, generar cotización, PDF y enviar email al cliente")
     public ResponseEntity<ApiResponse<Long>> confirm(@PathVariable Long id) {
         Rfq rfq = findOrThrow(id);
         rfq.setStatus(RfqStatus.IN_PROGRESS);
         rfqRepository.save(rfq);
+
         var quotation = quotationService.generateFromRfq(rfq);
+
+        rfq.setStatus(RfqStatus.QUOTED);
+        rfqRepository.save(rfq);
+
         return ResponseEntity.ok(ApiResponse.ok(quotation.getId(),
-                "Cotización generada: " + quotation.getQuotationNumber()));
+                "Cotización generada y enviada: " + quotation.getQuotationNumber()));
     }
 
     @GetMapping("/{id}/stock-check")

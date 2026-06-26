@@ -35,7 +35,10 @@ public class GraphConfiguration {
                 })
                 .build();
 
-        String[] scopes = new String[]{"https://graph.microsoft.com/Mail.ReadWrite"};
+        String[] scopes = new String[]{
+                "https://graph.microsoft.com/Mail.ReadWrite",
+                "https://graph.microsoft.com/Mail.Send"
+        };
         return new GraphServiceClient(credential, scopes);
     }
 }
