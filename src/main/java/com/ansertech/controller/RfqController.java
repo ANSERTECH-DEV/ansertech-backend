@@ -1,17 +1,19 @@
 package com.ansertech.controller;
 
-import com.ansertech.domain.entity.Product;
 import com.ansertech.domain.entity.Rfq;
+import com.ansertech.domain.entity.RfqStockCheckResult;
 import com.ansertech.domain.enums.RfqStatus;
+import com.ansertech.domain.enums.StockCheckStatus;
 import com.ansertech.dto.response.ApiResponse;
 import com.ansertech.dto.response.RfqResponse;
 import com.ansertech.dto.response.StockCheckItemResponse;
+import com.ansertech.dto.response.StockCheckResultResponse;
 import com.ansertech.exception.ResourceNotFoundException;
-import com.ansertech.repository.ProductRepository;
-import com.ansertech.repository.RfqItemRepository;
 import com.ansertech.repository.RfqRepository;
-import com.ansertech.service.ai.GeminiService;
+import com.ansertech.repository.RfqStockCheckResultRepository;
 import com.ansertech.service.quotation.QuotationService;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
@@ -32,10 +34,9 @@ import java.util.stream.Collectors;
 public class RfqController {
 
     private final RfqRepository rfqRepository;
-    private final RfqItemRepository rfqItemRepository;
+    private final RfqStockCheckResultRepository stockCheckResultRepository;
     private final QuotationService quotationService;
-    private final ProductRepository productRepository;
-    private final GeminiService geminiService;
+    private final ObjectMapper objectMapper;
 
     @GetMapping
     @Operation(summary = "Listar RFQs con filtro por estado")
@@ -47,7 +48,7 @@ public class RfqController {
             page = rfqRepository.findByStatusOrderByCreatedAtDesc(status, pageable);
         } else {
             page = rfqRepository.findByStatusInOrderByCreatedAtDesc(
-                    List.of(RfqStatus.PENDING_REVIEW, RfqStatus.IN_PROGRESS), pageable);
+                    List.of(RfqStatus.PROCESSING, RfqStatus.PENDING_REVIEW, RfqStatus.QUOTING), pageable);
         }
         return ResponseEntity.ok(ApiResponse.ok(page.map(this::toResponse)));
     }
@@ -72,7 +73,7 @@ public class RfqController {
     @Operation(summary = "Confirmar RFQ, generar cotización, PDF y enviar email al cliente")
     public ResponseEntity<ApiResponse<Long>> confirm(@PathVariable Long id) {
         Rfq rfq = findOrThrow(id);
-        rfq.setStatus(RfqStatus.IN_PROGRESS);
+        rfq.setStatus(RfqStatus.QUOTING);
         rfqRepository.save(rfq);
 
         var quotation = quotationService.generateFromRfq(rfq);
@@ -85,29 +86,50 @@ public class RfqController {
     }
 
     @GetMapping("/{id}/stock-check")
-    @Operation(summary = "Verificar stock de ítems del RFQ usando matching semántico con IA")
-    public ResponseEntity<ApiResponse<List<StockCheckItemResponse>>> stockCheck(@PathVariable Long id) {
-        Rfq rfq = findOrThrow(id);
-        List<Product> allProducts = productRepository.findAllActive();
-        List<StockCheckItemResponse> result = geminiService.matchRfqItemsToProducts(rfq.getItems(), allProducts);
+    @Operation(summary = "Consulta el resultado del stock-check automático del RFQ (read-only)")
+    public ResponseEntity<ApiResponse<StockCheckResultResponse>> stockCheck(@PathVariable Long id) {
+        findOrThrow(id);
 
-        // Persiste el match para que /confirm no necesite llamar Gemini de nuevo
-        Map<Long, StockCheckItemResponse> byItemId = result.stream()
-                .filter(r -> r.getRfqItemId() != null)
-                .collect(Collectors.toMap(StockCheckItemResponse::getRfqItemId, r -> r, (a, b) -> a));
-        rfq.getItems().forEach(item -> {
-            StockCheckItemResponse match = byItemId.get(item.getId());
-            if (match != null && match.isMatched()) {
-                item.setMatchedProductId(match.getProductId());
-                item.setMatchedUnitPrice(match.getUnitPrice());
-            } else {
-                item.setMatchedProductId(null);
-                item.setMatchedUnitPrice(null);
-            }
-        });
-        rfqItemRepository.saveAll(rfq.getItems());
+        RfqStockCheckResult dbResult = stockCheckResultRepository.findByRfqId(id)
+                .orElse(null);
 
-        return ResponseEntity.ok(ApiResponse.ok(result));
+        if (dbResult == null || dbResult.getStatus() == StockCheckStatus.PROCESSING) {
+            return ResponseEntity.ok(ApiResponse.ok(
+                    StockCheckResultResponse.builder()
+                            .rfqId(id)
+                            .status(StockCheckStatus.PROCESSING)
+                            .build()));
+        }
+
+        if (dbResult.getStatus() == StockCheckStatus.FAILED) {
+            return ResponseEntity.ok(ApiResponse.ok(
+                    StockCheckResultResponse.builder()
+                            .rfqId(id)
+                            .status(StockCheckStatus.FAILED)
+                            .processedAt(dbResult.getProcessedAt())
+                            .errorMessage(dbResult.getErrorMessage())
+                            .build()));
+        }
+
+        // DONE: deserializar ítems desde JSON persistido
+        try {
+            List<StockCheckItemResponse> items = objectMapper.readValue(
+                    dbResult.getItemsJson(), new TypeReference<List<StockCheckItemResponse>>() {});
+            return ResponseEntity.ok(ApiResponse.ok(
+                    StockCheckResultResponse.builder()
+                            .rfqId(id)
+                            .status(StockCheckStatus.DONE)
+                            .items(items)
+                            .processedAt(dbResult.getProcessedAt())
+                            .build()));
+        } catch (Exception e) {
+            return ResponseEntity.ok(ApiResponse.ok(
+                    StockCheckResultResponse.builder()
+                            .rfqId(id)
+                            .status(StockCheckStatus.FAILED)
+                            .errorMessage("Error deserializando resultado: " + e.getMessage())
+                            .build()));
+        }
     }
 
     @PostMapping("/{id}/reject")

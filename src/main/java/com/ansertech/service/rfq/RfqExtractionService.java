@@ -14,6 +14,8 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.math.BigDecimal;
 import java.util.ArrayList;
@@ -28,6 +30,7 @@ public class RfqExtractionService {
     private final RfqRepository rfqRepository;
     private final EmailPollingService pollingService;
     private final ObjectMapper objectMapper;
+    private final RfqStockCheckQueueService stockCheckQueueService;
 
     @Transactional
     public Rfq extractAndSave(Email email, List<EmailPollingService.AttachmentInfo> attachments) {
@@ -56,12 +59,26 @@ public class RfqExtractionService {
                 return buildFallbackRfq(email);
             }
 
-            return buildAndSaveRfq(email, extracted);
+            Rfq saved = buildAndSaveRfq(email, extracted);
+            scheduleStockCheck(saved.getId());
+            return saved;
 
         } catch (Exception e) {
             log.error("Excepción extrayendo RFQ para email {}: {}", email.getId(), e.getMessage());
-            return buildFallbackRfq(email);
+            Rfq fallback = buildFallbackRfq(email);
+            scheduleStockCheck(fallback.getId());
+            return fallback;
         }
+    }
+
+    private void scheduleStockCheck(Long rfqId) {
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                log.info("[Extraction] Encolando stock-check automático para RFQ {}", rfqId);
+                stockCheckQueueService.processRfq(rfqId);
+            }
+        });
     }
 
     private Rfq buildAndSaveRfq(Email email, JsonNode data) {
@@ -86,7 +103,7 @@ public class RfqExtractionService {
                 .clientPhone(nullIfEmpty(data.path("client_phone").asText()))
                 .urgency(data.path("urgency").asText("MEDIUM"))
                 .extractionConfidence(data.path("overall_confidence").asDouble(0.0))
-                .status(RfqStatus.PENDING_REVIEW)
+                .status(RfqStatus.PROCESSING)
                 .items(new ArrayList<>())
                 .build();
 
@@ -120,7 +137,7 @@ public class RfqExtractionService {
                 .clientEmail(email.getSenderEmail())
                 .clientName(email.getSenderName())
                 .extractionConfidence(0.0)
-                .status(RfqStatus.PENDING_REVIEW)
+                .status(RfqStatus.PROCESSING)
                 .notes("Extracción automática fallida — requiere revisión manual")
                 .items(new ArrayList<>())
                 .build();

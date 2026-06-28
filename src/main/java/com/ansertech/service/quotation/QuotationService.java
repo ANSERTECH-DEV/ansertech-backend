@@ -3,13 +3,16 @@ package com.ansertech.service.quotation;
 import com.ansertech.domain.entity.*;
 import com.ansertech.domain.enums.AvailabilityStatus;
 import com.ansertech.domain.enums.QuotationStatus;
+import com.ansertech.domain.enums.StockCheckStatus;
 import com.ansertech.dto.response.QuotationResponse;
-import com.ansertech.exception.BusinessException;
+import com.ansertech.dto.response.StockCheckItemResponse;
 import com.ansertech.exception.ResourceNotFoundException;
 import com.ansertech.repository.ProductRepository;
 import com.ansertech.repository.QuotationRepository;
+import com.ansertech.repository.RfqStockCheckResultRepository;
 import com.ansertech.service.ai.GeminiService;
 import com.ansertech.service.email.EmailSenderService;
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
@@ -25,8 +28,8 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 
 @Slf4j
@@ -38,6 +41,7 @@ public class QuotationService {
 
     private final QuotationRepository quotationRepository;
     private final ProductRepository productRepository;
+    private final RfqStockCheckResultRepository stockCheckResultRepository;
     private final GeminiService geminiService;
     private final QuotationPdfService pdfService;
     private final EmailSenderService emailSenderService;
@@ -45,12 +49,14 @@ public class QuotationService {
 
     public Quotation generateFromRfq(Rfq rfq) {
         try {
+            List<StockCheckItemResponse> stockCheckItems = loadStockCheckItems(rfq.getId());
+
             String rfqJson = objectMapper.writeValueAsString(rfqToMap(rfq));
-            String inventoryJson = buildInventoryContext(rfq);
+            String inventoryJson = buildInventoryContextFromStockCheck(stockCheckItems);
 
-            JsonNode aiResult = geminiService.analyzeAndGenerateQuotation(rfqJson, inventoryJson);
+            JsonNode aiResult = geminiService.analyzeRfq(rfqJson, inventoryJson);
 
-            Quotation quotation = buildQuotation(rfq, aiResult);
+            Quotation quotation = buildQuotation(rfq, aiResult, stockCheckItems);
             quotationRepository.save(quotation);
 
             pdfService.generateAndStore(quotation);
@@ -62,6 +68,46 @@ public class QuotationService {
         } catch (Exception e) {
             log.error("Error generando cotización para RFQ {}: {}", rfq.getId(), e.getMessage());
             return buildMinimalQuotation(rfq);
+        }
+    }
+
+    private List<StockCheckItemResponse> loadStockCheckItems(Long rfqId) {
+        return stockCheckResultRepository.findByRfqId(rfqId)
+                .filter(r -> r.getStatus() == StockCheckStatus.DONE && r.getItemsJson() != null)
+                .map(r -> {
+                    try {
+                        return objectMapper.readValue(r.getItemsJson(),
+                                new TypeReference<List<StockCheckItemResponse>>() {});
+                    } catch (Exception e) {
+                        log.warn("No se pudo deserializar stock-check para RFQ {}: {}", rfqId, e.getMessage());
+                        return List.<StockCheckItemResponse>of();
+                    }
+                })
+                .orElse(List.of());
+    }
+
+    private String buildInventoryContextFromStockCheck(List<StockCheckItemResponse> items) {
+        try {
+            List<Map<String, Object>> results = items.stream().map(item -> {
+                if (!item.isMatched()) {
+                    return Map.<String, Object>of(
+                            "description", item.getRfqDescription() != null ? item.getRfqDescription() : "",
+                            "found", false);
+                }
+                BigDecimal price = item.getUnitPrice() != null ? item.getUnitPrice() : BigDecimal.ZERO;
+                BigDecimal stock = item.getStockQuantity() != null ? item.getStockQuantity() : BigDecimal.ZERO;
+                return Map.<String, Object>of(
+                        "description", item.getRfqDescription() != null ? item.getRfqDescription() : "",
+                        "found", true,
+                        "sku",       item.getProductSku()  != null ? item.getProductSku()  : "",
+                        "name",      item.getProductName() != null ? item.getProductName() : "",
+                        "stock",     stock,
+                        "price",     price,
+                        "available", item.isStockSufficient());
+            }).collect(Collectors.toList());
+            return objectMapper.writeValueAsString(results);
+        } catch (Exception e) {
+            return "[]";
         }
     }
 
@@ -146,7 +192,12 @@ public class QuotationService {
         return q.getPdfPath();
     }
 
-    private Quotation buildQuotation(Rfq rfq, JsonNode ai) {
+    private Quotation buildQuotation(Rfq rfq, JsonNode ai, List<StockCheckItemResponse> stockCheckItems) {
+        // Índice por rfqItemId para lookup O(1)
+        Map<Long, StockCheckItemResponse> byItemId = stockCheckItems.stream()
+                .filter(s -> s.getRfqItemId() != null)
+                .collect(Collectors.toMap(StockCheckItemResponse::getRfqItemId, s -> s, (a, b) -> a));
+
         String number = generateQuotationNumber();
         List<QuotationItem> items = new ArrayList<>();
 
@@ -161,35 +212,30 @@ public class QuotationService {
                 .items(items)
                 .build();
 
-        try {
-            quotation.setAiAlertsJson(objectMapper.writeValueAsString(ai.path("alerts")));
-        } catch (Exception ignored) {}
-
         for (RfqItem rfqItem : rfq.getItems()) {
-            boolean found = rfqItem.getMatchedProductId() != null;
+            StockCheckItemResponse match = byItemId.get(rfqItem.getId());
+            boolean found = match != null && match.isMatched();
 
             BigDecimal qty   = rfqItem.getQuantity() != null ? rfqItem.getQuantity() : BigDecimal.ONE;
             String desc      = rfqItem.getProductDescription() != null ? rfqItem.getProductDescription() : "";
             String unit      = rfqItem.getUnit() != null ? rfqItem.getUnit() : "unidad";
-            BigDecimal price = found && rfqItem.getMatchedUnitPrice() != null
-                    ? rfqItem.getMatchedUnitPrice() : BigDecimal.ZERO;
+            BigDecimal price = found && match.getUnitPrice() != null ? match.getUnitPrice() : BigDecimal.ZERO;
             AvailabilityStatus avail = found ? AvailabilityStatus.IN_STOCK : AvailabilityStatus.ON_ORDER;
 
             Product product = found
-                    ? productRepository.findById(rfqItem.getMatchedProductId()).orElse(null)
+                    ? productRepository.findById(match.getProductId()).orElse(null)
                     : null;
 
             BigDecimal sub = qty.multiply(price).setScale(2, RoundingMode.HALF_UP);
 
-            QuotationItem qi = QuotationItem.builder()
+            items.add(QuotationItem.builder()
                     .quotation(quotation)
                     .product(product)
                     .description(desc)
                     .quantity(qty).unit(unit)
                     .unitPrice(price).subtotal(sub)
                     .availabilityStatus(avail)
-                    .build();
-            items.add(qi);
+                    .build());
         }
 
         BigDecimal subtotal = items.stream()
@@ -214,31 +260,6 @@ public class QuotationService {
         return quotationRepository.save(q);
     }
 
-    private String buildInventoryContext(Rfq rfq) {
-        try {
-            List<java.util.Map<String, Object>> results = rfq.getItems().stream().map(item -> {
-                String desc = item.getProductDescription() != null ? item.getProductDescription() : "";
-                if (item.getMatchedProductId() == null) {
-                    return java.util.Map.<String, Object>of("description", desc, "found", false);
-                }
-                Product p = productRepository.findById(item.getMatchedProductId()).orElse(null);
-                if (p == null) return java.util.Map.<String, Object>of("description", desc, "found", false);
-                BigDecimal price = item.getMatchedUnitPrice() != null ? item.getMatchedUnitPrice() : BigDecimal.ZERO;
-                BigDecimal stock = p.getStockQuantity() != null ? p.getStockQuantity() : BigDecimal.ZERO;
-                double qty = item.getQuantity() != null ? item.getQuantity().doubleValue() : 1.0;
-                return java.util.Map.<String, Object>of(
-                        "description", desc, "found", true,
-                        "sku",   p.getSku()  != null ? p.getSku()  : "",
-                        "name",  p.getName() != null ? p.getName() : "",
-                        "stock", stock, "price", price,
-                        "available", stock.doubleValue() >= qty
-                );
-            }).collect(Collectors.toList());
-            return objectMapper.writeValueAsString(results);
-        } catch (Exception e) {
-            return "[]";
-        }
-    }
 
 
     private String generateQuotationNumber() {

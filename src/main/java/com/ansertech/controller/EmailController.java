@@ -376,11 +376,11 @@ public class EmailController {
     private String rfqStatusLabel(Rfq rfq) {
         if (rfq.getStatus() == null) return "-";
         return switch (rfq.getStatus()) {
+            case PROCESSING     -> "PROCESANDO";
             case PENDING_REVIEW -> "PENDIENTE REVISIÓN";
-            case IN_PROGRESS    -> "EN PROCESO";
+            case QUOTING        -> "COTIZANDO";
             case QUOTED         -> "COTIZADO";
             case REJECTED       -> "RECHAZADO";
-            default             -> rfq.getStatus().name();
         };
     }
 

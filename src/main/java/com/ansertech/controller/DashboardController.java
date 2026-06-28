@@ -43,7 +43,9 @@ public class DashboardController {
         long uncertain = emailRepository.countByStatus(EmailStatus.UNCERTAIN);
 
         long totalRfqs = rfqRepository.count();
+        long processingRfqs = rfqRepository.countByStatus(RfqStatus.PROCESSING);
         long pendingRfqs = rfqRepository.countByStatus(RfqStatus.PENDING_REVIEW);
+        long quotingRfqs = rfqRepository.countByStatus(RfqStatus.QUOTING);
         long quotedRfqs = rfqRepository.countByStatus(RfqStatus.QUOTED);
 
         long totalQuotations = quotationRepository.count();
@@ -56,7 +58,8 @@ public class DashboardController {
 
         return ResponseEntity.ok(ApiResponse.ok(DashboardStatsResponse.builder()
                 .totalEmails(totalEmails).spamEmails(spam).validEmails(valid).uncertainEmails(uncertain)
-                .totalRfqs(totalRfqs).pendingRfqs(pendingRfqs).quotedRfqs(quotedRfqs)
+                .totalRfqs(totalRfqs).processingRfqs(processingRfqs)
+                .pendingRfqs(pendingRfqs).quotingRfqs(quotingRfqs).quotedRfqs(quotedRfqs)
                 .totalQuotations(totalQuotations).draftQuotations(draft)
                 .sentQuotations(sent).acceptedQuotations(accepted)
                 .lowStockProducts(lowStock).conversionRate(conversionRate)
