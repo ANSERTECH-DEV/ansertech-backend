@@ -8,6 +8,7 @@ import com.ansertech.dto.response.RfqResponse;
 import com.ansertech.dto.response.StockCheckItemResponse;
 import com.ansertech.exception.ResourceNotFoundException;
 import com.ansertech.repository.ProductRepository;
+import com.ansertech.repository.RfqItemRepository;
 import com.ansertech.repository.RfqRepository;
 import com.ansertech.service.ai.GeminiService;
 import com.ansertech.service.quotation.QuotationService;
@@ -31,6 +32,7 @@ import java.util.stream.Collectors;
 public class RfqController {
 
     private final RfqRepository rfqRepository;
+    private final RfqItemRepository rfqItemRepository;
     private final QuotationService quotationService;
     private final ProductRepository productRepository;
     private final GeminiService geminiService;
@@ -88,6 +90,23 @@ public class RfqController {
         Rfq rfq = findOrThrow(id);
         List<Product> allProducts = productRepository.findAllActive();
         List<StockCheckItemResponse> result = geminiService.matchRfqItemsToProducts(rfq.getItems(), allProducts);
+
+        // Persiste el match para que /confirm no necesite llamar Gemini de nuevo
+        Map<Long, StockCheckItemResponse> byItemId = result.stream()
+                .filter(r -> r.getRfqItemId() != null)
+                .collect(Collectors.toMap(StockCheckItemResponse::getRfqItemId, r -> r, (a, b) -> a));
+        rfq.getItems().forEach(item -> {
+            StockCheckItemResponse match = byItemId.get(item.getId());
+            if (match != null && match.isMatched()) {
+                item.setMatchedProductId(match.getProductId());
+                item.setMatchedUnitPrice(match.getUnitPrice());
+            } else {
+                item.setMatchedProductId(null);
+                item.setMatchedUnitPrice(null);
+            }
+        });
+        rfqItemRepository.saveAll(rfq.getItems());
+
         return ResponseEntity.ok(ApiResponse.ok(result));
     }
 

@@ -27,7 +27,6 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Set;
 import java.util.stream.Collectors;
 
 @Slf4j
@@ -66,6 +65,19 @@ public class QuotationService {
         }
     }
 
+    private List<String> extractCcAddresses(Rfq rfq) {
+        try {
+            if (rfq.getEmail() != null && rfq.getEmail().getCcAddresses() != null
+                    && !rfq.getEmail().getCcAddresses().isBlank()) {
+                return Arrays.stream(rfq.getEmail().getCcAddresses().split(","))
+                        .map(String::trim)
+                        .filter(s -> !s.isBlank())
+                        .collect(Collectors.toList());
+            }
+        } catch (Exception ignored) {}
+        return List.of();
+    }
+
     private void sendEmailToClient(Quotation quotation, Rfq rfq) {
         String clientEmail = rfq.getClientEmail();
         if (clientEmail == null || clientEmail.isBlank()) {
@@ -81,8 +93,8 @@ public class QuotationService {
             byte[] pdfBytes = pdfService.downloadPdf(quotation.getPdfPath());
             emailSenderService.sendQuotationEmail(
                     clientEmail, rfq.getClientName(), quotation.getQuotationNumber(),
-                    quotation.getAiSummary(), quotation.getSubtotal(),
-                    quotation.getIgv(), quotation.getTotal(), pdfBytes
+                    quotation.getSubtotal(), quotation.getIgv(), quotation.getTotal(),
+                    pdfBytes, extractCcAddresses(rfq)
             );
             quotation.setStatus(QuotationStatus.SENT);
             quotation.setSentAt(LocalDateTime.now());
@@ -116,8 +128,9 @@ public class QuotationService {
             byte[] pdfBytes = pdfService.downloadPdf(q.getPdfPath());
             emailSenderService.sendQuotationEmail(
                     q.getRfq().getClientEmail(), q.getRfq().getClientName(),
-                    q.getQuotationNumber(), q.getAiSummary(),
-                    q.getSubtotal(), q.getIgv(), q.getTotal(), pdfBytes
+                    q.getQuotationNumber(),
+                    q.getSubtotal(), q.getIgv(), q.getTotal(),
+                    pdfBytes, extractCcAddresses(q.getRfq())
             );
         } else {
             log.warn("Cotización {} sin correo de cliente o PDF", q.getQuotationNumber());
@@ -152,27 +165,31 @@ public class QuotationService {
             quotation.setAiAlertsJson(objectMapper.writeValueAsString(ai.path("alerts")));
         } catch (Exception ignored) {}
 
-        JsonNode aiItems = ai.path("quotation_items");
-        if (aiItems.isArray()) {
-            for (JsonNode itemNode : aiItems) {
-                BigDecimal qty = BigDecimal.valueOf(itemNode.path("quantity").asDouble(1.0));
-                BigDecimal price = BigDecimal.valueOf(itemNode.path("unit_price").asDouble(0.0));
-                BigDecimal sub = qty.multiply(price).setScale(2, RoundingMode.HALF_UP);
+        for (RfqItem rfqItem : rfq.getItems()) {
+            boolean found = rfqItem.getMatchedProductId() != null;
 
-                String availStr = itemNode.path("availability_status").asText("IN_STOCK");
-                AvailabilityStatus avail;
-                try { avail = AvailabilityStatus.valueOf(availStr); }
-                catch (Exception e) { avail = AvailabilityStatus.IN_STOCK; }
+            BigDecimal qty   = rfqItem.getQuantity() != null ? rfqItem.getQuantity() : BigDecimal.ONE;
+            String desc      = rfqItem.getProductDescription() != null ? rfqItem.getProductDescription() : "";
+            String unit      = rfqItem.getUnit() != null ? rfqItem.getUnit() : "unidad";
+            BigDecimal price = found && rfqItem.getMatchedUnitPrice() != null
+                    ? rfqItem.getMatchedUnitPrice() : BigDecimal.ZERO;
+            AvailabilityStatus avail = found ? AvailabilityStatus.IN_STOCK : AvailabilityStatus.ON_ORDER;
 
-                QuotationItem qi = QuotationItem.builder()
-                        .quotation(quotation)
-                        .description(itemNode.path("product_description").asText(""))
-                        .quantity(qty).unit(itemNode.path("unit").asText("unidad"))
-                        .unitPrice(price).subtotal(sub)
-                        .availabilityStatus(avail)
-                        .build();
-                items.add(qi);
-            }
+            Product product = found
+                    ? productRepository.findById(rfqItem.getMatchedProductId()).orElse(null)
+                    : null;
+
+            BigDecimal sub = qty.multiply(price).setScale(2, RoundingMode.HALF_UP);
+
+            QuotationItem qi = QuotationItem.builder()
+                    .quotation(quotation)
+                    .product(product)
+                    .description(desc)
+                    .quantity(qty).unit(unit)
+                    .unitPrice(price).subtotal(sub)
+                    .availabilityStatus(avail)
+                    .build();
+            items.add(qi);
         }
 
         BigDecimal subtotal = items.stream()
@@ -201,18 +218,18 @@ public class QuotationService {
         try {
             List<java.util.Map<String, Object>> results = rfq.getItems().stream().map(item -> {
                 String desc = item.getProductDescription() != null ? item.getProductDescription() : "";
-                double qty = item.getQuantity() != null ? item.getQuantity().doubleValue() : 1.0;
-                List<Product> matches = findBestProductMatch(desc);
-                if (matches.isEmpty()) {
+                if (item.getMatchedProductId() == null) {
                     return java.util.Map.<String, Object>of("description", desc, "found", false);
                 }
-                Product p = matches.get(0);
-                BigDecimal price = p.getUnitPrice() != null ? p.getUnitPrice() : BigDecimal.ZERO;
+                Product p = productRepository.findById(item.getMatchedProductId()).orElse(null);
+                if (p == null) return java.util.Map.<String, Object>of("description", desc, "found", false);
+                BigDecimal price = item.getMatchedUnitPrice() != null ? item.getMatchedUnitPrice() : BigDecimal.ZERO;
                 BigDecimal stock = p.getStockQuantity() != null ? p.getStockQuantity() : BigDecimal.ZERO;
+                double qty = item.getQuantity() != null ? item.getQuantity().doubleValue() : 1.0;
                 return java.util.Map.<String, Object>of(
                         "description", desc, "found", true,
-                        "sku", p.getSku() != null ? p.getSku() : "",
-                        "name", p.getName() != null ? p.getName() : "",
+                        "sku",   p.getSku()  != null ? p.getSku()  : "",
+                        "name",  p.getName() != null ? p.getName() : "",
                         "stock", stock, "price", price,
                         "available", stock.doubleValue() >= qty
                 );
@@ -223,38 +240,6 @@ public class QuotationService {
         }
     }
 
-    private static final Set<String> STOP_WORDS = Set.of(
-            "de", "del", "el", "la", "los", "las", "con", "para", "por", "en",
-            "un", "una", "y", "o", "a", "al", "suministro", "provision", "provisión",
-            "compra", "adquisición", "adquisicion", "instalacion", "instalación"
-    );
-
-    private List<Product> findBestProductMatch(String desc) {
-        List<Product> matches = productRepository.findByDescriptionLike(desc);
-        if (!matches.isEmpty()) return matches;
-
-        String[] words = desc.split("[\\s,./()]+");
-        List<String> keywords = Arrays.stream(words)
-                .map(w -> w.toLowerCase().replaceAll("[^a-záéíóúüñ]", ""))
-                .filter(w -> w.length() > 3 && !STOP_WORDS.contains(w) && !w.matches("\\d+"))
-                .sorted((a, b) -> b.length() - a.length())
-                .distinct()
-                .collect(Collectors.toList());
-
-        for (String keyword : keywords) {
-            matches = productRepository.findByDescriptionLike(keyword);
-            if (!matches.isEmpty()) return matches;
-            // Prueba forma singular en español (quitar -es o -s)
-            if (keyword.endsWith("es") && keyword.length() > 5) {
-                matches = productRepository.findByDescriptionLike(keyword.substring(0, keyword.length() - 2));
-                if (!matches.isEmpty()) return matches;
-            } else if (keyword.endsWith("s") && keyword.length() > 4) {
-                matches = productRepository.findByDescriptionLike(keyword.substring(0, keyword.length() - 1));
-                if (!matches.isEmpty()) return matches;
-            }
-        }
-        return List.of();
-    }
 
     private String generateQuotationNumber() {
         int year = LocalDate.now().getYear();

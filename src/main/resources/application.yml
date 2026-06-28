@@ -20,8 +20,8 @@ spring:
 
 azure:
   storage:
-    endpoint: https://${AZURE_STORAGE_ACCOUNT}.blob.core.windows.net
-    container-name: ${AZURE_STORAGE_CONTAINER}
+    connection-string: ${AZURE_STORAGE_CONNECTION_STRING}
+    container-name: ${AZURE_STORAGE_CONTAINER:quotations}
 
 server:
   port: ${SERVER_PORT:8080}
@@ -58,9 +58,9 @@ microsoft:
 
   polling:
     enabled: false
-    fixed-delay-ms: 120000
+    fixed-delay-ms: 2400000
     initial-delay-ms: 10000
-    max-messages-per-poll: 2
+    max-messages-per-poll: 5
 
   classification:
     confidence-threshold: 0.85

@@ -81,7 +81,19 @@ public class GraphPollingService implements EmailPollingService {
             }
         }
 
-        return new RawEmailData(uid, senderEmail, senderName, subject, body, receivedAt, hasAttachments, attachments);
+        List<String> ccAddresses = new ArrayList<>();
+        if (msg.getCcRecipients() != null) {
+            for (var recipient : msg.getCcRecipients()) {
+                if (recipient.getEmailAddress() != null) {
+                    String addr = recipient.getEmailAddress().getAddress();
+                    if (addr != null && !addr.isBlank()) {
+                        ccAddresses.add(addr);
+                    }
+                }
+            }
+        }
+
+        return new RawEmailData(uid, senderEmail, senderName, subject, body, receivedAt, hasAttachments, attachments, ccAddresses);
     }
 
     @Override

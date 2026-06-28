@@ -18,12 +18,12 @@ public class EmailSenderService {
     private final GraphServiceClient graphClient;
 
     public void sendQuotationEmail(String toEmail, String toName,
-                                   String quotationNumber, String aiSummary,
+                                   String quotationNumber,
                                    BigDecimal subtotal, BigDecimal igv, BigDecimal total,
-                                   byte[] pdfBytes) {
+                                   byte[] pdfBytes, List<String> ccAddresses) {
         ItemBody body = new ItemBody();
         body.setContentType(BodyType.Html);
-        body.setContent(buildHtmlBody(toName, quotationNumber, subtotal, igv, total, aiSummary));
+        body.setContent(buildHtmlBody(toName, quotationNumber, subtotal, igv, total));
 
         EmailAddress emailAddress = new EmailAddress();
         emailAddress.setAddress(toEmail);
@@ -44,6 +44,22 @@ public class EmailSenderService {
         message.setToRecipients(List.of(recipient));
         message.setAttachments(List.of(attachment));
 
+        if (ccAddresses != null && !ccAddresses.isEmpty()) {
+            List<Recipient> ccList = ccAddresses.stream()
+                    .filter(addr -> addr != null && !addr.isBlank())
+                    .map(addr -> {
+                        EmailAddress cc = new EmailAddress();
+                        cc.setAddress(addr.trim());
+                        Recipient r = new Recipient();
+                        r.setEmailAddress(cc);
+                        return r;
+                    }).toList();
+            if (!ccList.isEmpty()) {
+                message.setCcRecipients(ccList);
+                log.info("CC agregado: {}", ccAddresses);
+            }
+        }
+
         SendMailPostRequestBody sendMailBody = new SendMailPostRequestBody();
         sendMailBody.setMessage(message);
         sendMailBody.setSaveToSentItems(true);
@@ -53,13 +69,8 @@ public class EmailSenderService {
     }
 
     private String buildHtmlBody(String name, String quotationNumber,
-                                  BigDecimal subtotal, BigDecimal igv, BigDecimal total,
-                                  String aiSummary) {
+                                  BigDecimal subtotal, BigDecimal igv, BigDecimal total) {
         String greeting = (name != null && !name.isBlank()) ? name : "Cliente";
-        String summarySection = (aiSummary != null && !aiSummary.isBlank())
-                ? "<p style='color:#555;font-style:italic;border-left:3px solid #3a8fd1;"
-                  + "padding-left:10px;margin:16px 0;'>" + aiSummary + "</p>"
-                : "";
 
         return String.format("""
             <html><body style="font-family:Arial,sans-serif;color:#333;margin:0;padding:0;">
@@ -72,7 +83,6 @@ public class EmailSenderService {
                 <p>Estimado/a <strong>%s</strong>,</p>
                 <p>Adjunto encontrará la cotización <strong>%s</strong>
                    elaborada por nuestro equipo comercial en respuesta a su solicitud.</p>
-                %s
                 <table style="width:100%%;border-collapse:collapse;margin:20px 0;">
                   <tr style="background:#f4f6fa;">
                     <td style="padding:10px 14px;border-bottom:1px solid #e0e0e0;">Subtotal</td>
@@ -105,6 +115,6 @@ public class EmailSenderService {
               </div>
             </div>
             </body></html>
-            """, greeting, quotationNumber, summarySection, subtotal, igv, total);
+            """, greeting, quotationNumber, subtotal, igv, total);
     }
 }

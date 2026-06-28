@@ -37,4 +37,10 @@ public class RfqItem {
 
     @Column(columnDefinition = "TEXT")
     private String notes;
+
+    @Column(name = "matched_product_id")
+    private Long matchedProductId;
+
+    @Column(name = "matched_unit_price")
+    private BigDecimal matchedUnitPrice;
 }
