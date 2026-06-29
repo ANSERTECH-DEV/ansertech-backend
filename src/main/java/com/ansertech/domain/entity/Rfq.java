@@ -64,6 +64,7 @@ public class Rfq {
     private Double conversionProbability;
 
     @OneToMany(mappedBy = "rfq", cascade = CascadeType.ALL, orphanRemoval = true)
+    @OrderBy("id ASC")
     @Builder.Default
     private List<RfqItem> items = new ArrayList<>();
 

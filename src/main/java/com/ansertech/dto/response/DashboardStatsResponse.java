@@ -10,7 +10,9 @@ public class DashboardStatsResponse {
     private long validEmails;
     private long uncertainEmails;
     private long totalRfqs;
+    private long processingRfqs;
     private long pendingRfqs;
+    private long quotingRfqs;
     private long quotedRfqs;
     private long totalQuotations;
     private long draftQuotations;

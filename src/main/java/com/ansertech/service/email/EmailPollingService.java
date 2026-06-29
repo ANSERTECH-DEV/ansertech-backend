@@ -15,7 +15,8 @@ public interface EmailPollingService {
             String body,
             java.time.LocalDateTime receivedAt,
             boolean hasAttachments,
-            List<AttachmentInfo> attachments
+            List<AttachmentInfo> attachments,
+            List<String> ccAddresses
     ) {}
 
     record AttachmentInfo(

@@ -37,4 +37,5 @@ public class RfqItem {
 
     @Column(columnDefinition = "TEXT")
     private String notes;
+
 }

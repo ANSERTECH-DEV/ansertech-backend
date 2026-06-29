@@ -7,8 +7,7 @@ import com.ansertech.service.quotation.QuotationService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
-import org.springframework.core.io.FileSystemResource;
-import org.springframework.core.io.Resource;
+import com.ansertech.service.quotation.QuotationPdfService;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.web.PageableDefault;
@@ -17,8 +16,6 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
-import java.io.File;
-
 @RestController
 @RequestMapping("/api/quotations")
 @RequiredArgsConstructor
@@ -26,6 +23,7 @@ import java.io.File;
 public class QuotationController {
 
     private final QuotationService quotationService;
+    private final QuotationPdfService pdfService;
 
     @GetMapping
     @Operation(summary = "Listar cotizaciones con filtro por estado")
@@ -48,15 +46,15 @@ public class QuotationController {
     }
 
     @GetMapping("/{id}/pdf")
-    @Operation(summary = "Descargar PDF de la cotización")
-    public ResponseEntity<Resource> downloadPdf(@PathVariable Long id) {
-        String path = quotationService.getPdfPath(id);
-        File file = new File(path);
-        Resource resource = new FileSystemResource(file);
+    @Operation(summary = "Descargar PDF de la cotización desde Azure Blob Storage")
+    public ResponseEntity<byte[]> downloadPdf(@PathVariable Long id) {
+        String pdfUrl = quotationService.getPdfPath(id);
+        byte[] pdfBytes = pdfService.downloadPdf(pdfUrl);
+        String filename = "COT-" + id + ".pdf";
         return ResponseEntity.ok()
                 .contentType(MediaType.APPLICATION_PDF)
                 .header(HttpHeaders.CONTENT_DISPOSITION,
-                        "attachment; filename=\"" + file.getName() + "\"")
-                .body(resource);
+                        "attachment; filename=\"" + filename + "\"")
+                .body(pdfBytes);
     }
 }

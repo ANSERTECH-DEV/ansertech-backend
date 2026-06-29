@@ -45,6 +45,9 @@ public class Email {
     @Column(name = "classification_reason", columnDefinition = "TEXT")
     private String classificationReason;
 
+    @Column(name = "cc_addresses", columnDefinition = "TEXT")
+    private String ccAddresses;
+
     @Column(name = "has_attachments")
     @Builder.Default
     private Boolean hasAttachments = false;
