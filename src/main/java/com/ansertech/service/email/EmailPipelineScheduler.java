@@ -28,16 +28,16 @@ public class EmailPipelineScheduler {
     private final EmailRepository emailRepository;
     private final ObjectMapper objectMapper;
 
-    @Value("${email.polling.enabled:false}")
+    @Value("${microsoft.polling.enabled:false}")
     private boolean pollingEnabled;
 
-    @Value("${email.polling.max-results:50}")
+    @Value("${microsoft.polling.max-messages-per-poll:50}")
     private int maxResults;
 
-    @Scheduled(fixedDelayString = "${email.polling.fixed-delay-ms:120000}")
+    @Scheduled(fixedDelayString = "${microsoft.polling.fixed-delay-ms:2400000}")
     public void runPipeline() {
         if (!pollingEnabled) {
-            log.debug("Polling de correos deshabilitado (email.polling.enabled=false)");
+            log.debug("Polling de correos deshabilitado (microsoft.polling.enabled=false)");
             return;
         }
         log.info("Iniciando polling de correos — {}", LocalDateTime.now());
@@ -65,6 +65,8 @@ public class EmailPipelineScheduler {
             attachmentsJson = objectMapper.writeValueAsString(raw.attachments());
         } catch (Exception ignored) {}
 
+        String ccJson = raw.ccAddresses().isEmpty() ? null : String.join(",", raw.ccAddresses());
+
         Email email = Email.builder()
                 .externalMessageId(raw.externalId())
                 .senderEmail(raw.senderEmail())
@@ -74,6 +76,7 @@ public class EmailPipelineScheduler {
                 .receivedAt(raw.receivedAt())
                 .hasAttachments(raw.hasAttachments())
                 .attachmentsJson(attachmentsJson)
+                .ccAddresses(ccJson)
                 .emailProvider(pollingService.getClass().getSimpleName()
                         .replace("PollingService", "").toLowerCase())
                 .status(EmailStatus.PROCESSING)
@@ -83,13 +86,9 @@ public class EmailPipelineScheduler {
         try {
             EmailStatus status = classificationService.classify(email);
 
-            if (status == EmailStatus.VALID || status == EmailStatus.UNCERTAIN) {
+            if (status == EmailStatus.VALID) {
                 var rfq = rfqExtractionService.extractAndSave(email, raw.attachments());
                 log.info("RFQ {} creado desde email {}", rfq.getId(), email.getId());
-
-                if (status == EmailStatus.VALID) {
-                    quotationService.generateFromRfq(rfq);
-                }
             }
 
             pollingService.markAsRead(raw.externalId());

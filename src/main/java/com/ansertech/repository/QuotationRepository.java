@@ -6,10 +6,13 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
+import org.springframework.stereotype.Repository;
 
 import java.util.Optional;
 
+@Repository
 public interface QuotationRepository extends JpaRepository<Quotation, Long> {
+    Optional<Quotation> findFirstByRfqIdOrderByCreatedAtAsc(Long rfqId);
     Optional<Quotation> findByQuotationNumber(String quotationNumber);
     Page<Quotation> findByStatusOrderByCreatedAtDesc(QuotationStatus status, Pageable pageable);
     Page<Quotation> findAllByOrderByCreatedAtDesc(Pageable pageable);

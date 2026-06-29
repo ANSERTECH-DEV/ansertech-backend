@@ -30,16 +30,14 @@ public class QuotationItem {
     @Column(columnDefinition = "TEXT")
     private String description;
 
-    @Column(precision = 10, scale = 3)
     private BigDecimal quantity;
 
     @Column(length = 50)
     private String unit;
 
-    @Column(name = "unit_price", precision = 12, scale = 2)
+    @Column(name = "unit_price")
     private BigDecimal unitPrice;
 
-    @Column(precision = 12, scale = 2)
     private BigDecimal subtotal;
 
     @Enumerated(EnumType.STRING)
