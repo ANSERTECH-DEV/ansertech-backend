@@ -14,6 +14,8 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.math.BigDecimal;
 import java.util.ArrayList;
@@ -28,11 +30,13 @@ public class RfqExtractionService {
     private final RfqRepository rfqRepository;
     private final EmailPollingService pollingService;
     private final ObjectMapper objectMapper;
+    private final RfqStockCheckQueueService stockCheckQueueService;
 
     @Transactional
     public Rfq extractAndSave(Email email, List<EmailPollingService.AttachmentInfo> attachments) {
         try {
             JsonNode extracted;
+            String bodyWithContext = buildBodyWithContext(email);
 
             if (!attachments.isEmpty()) {
                 EmailPollingService.AttachmentInfo first = attachments.get(0);
@@ -41,13 +45,13 @@ public class RfqExtractionService {
 
                 if (isSupportedMime) {
                     byte[] bytes = pollingService.fetchAttachment(email.getExternalMessageId(), first.id());
-                    extracted = geminiService.extractRfqFromBytes(bytes, first.mimeType(), email.getBody());
+                    extracted = geminiService.extractRfqFromBytes(bytes, first.mimeType(), bodyWithContext);
                     log.info("RFQ extraído desde adjunto {} ({})", first.name(), first.mimeType());
                 } else {
-                    extracted = geminiService.extractRfq(email.getBody());
+                    extracted = geminiService.extractRfq(bodyWithContext);
                 }
             } else {
-                extracted = geminiService.extractRfq(email.getBody());
+                extracted = geminiService.extractRfq(bodyWithContext);
             }
 
             if (extracted.has("error")) {
@@ -55,27 +59,51 @@ public class RfqExtractionService {
                 return buildFallbackRfq(email);
             }
 
-            return buildAndSaveRfq(email, extracted);
+            Rfq saved = buildAndSaveRfq(email, extracted);
+            scheduleStockCheck(saved.getId());
+            return saved;
 
         } catch (Exception e) {
             log.error("Excepción extrayendo RFQ para email {}: {}", email.getId(), e.getMessage());
-            return buildFallbackRfq(email);
+            Rfq fallback = buildFallbackRfq(email);
+            scheduleStockCheck(fallback.getId());
+            return fallback;
         }
+    }
+
+    private void scheduleStockCheck(Long rfqId) {
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                log.info("[Extraction] Encolando stock-check automático para RFQ {}", rfqId);
+                stockCheckQueueService.processRfq(rfqId);
+            }
+        });
     }
 
     private Rfq buildAndSaveRfq(Email email, JsonNode data) {
         RfqType rfqType = parseEnum(data.path("rfq_type").asText("PRODUCT_SALE"), RfqType.class);
 
+        String clientEmail = nullIfEmpty(data.path("client_email").asText());
+        if (clientEmail == null) {
+            clientEmail = email.getSenderEmail();
+        }
+
+        String clientName = nullIfEmpty(data.path("client_name").asText());
+        if (clientName == null) {
+            clientName = email.getSenderName();
+        }
+
         Rfq rfq = Rfq.builder()
                 .email(email)
                 .rfqType(rfqType)
-                .clientName(nullIfEmpty(data.path("client_name").asText()))
+                .clientName(clientName)
                 .clientCompany(nullIfEmpty(data.path("client_company").asText()))
-                .clientEmail(nullIfEmpty(data.path("client_email").asText()))
+                .clientEmail(clientEmail)
                 .clientPhone(nullIfEmpty(data.path("client_phone").asText()))
                 .urgency(data.path("urgency").asText("MEDIUM"))
                 .extractionConfidence(data.path("overall_confidence").asDouble(0.0))
-                .status(RfqStatus.PENDING_REVIEW)
+                .status(RfqStatus.PROCESSING)
                 .items(new ArrayList<>())
                 .build();
 
@@ -109,7 +137,7 @@ public class RfqExtractionService {
                 .clientEmail(email.getSenderEmail())
                 .clientName(email.getSenderName())
                 .extractionConfidence(0.0)
-                .status(RfqStatus.PENDING_REVIEW)
+                .status(RfqStatus.PROCESSING)
                 .notes("Extracción automática fallida — requiere revisión manual")
                 .items(new ArrayList<>())
                 .build();
@@ -126,5 +154,19 @@ public class RfqExtractionService {
 
     private String nullIfEmpty(String value) {
         return (value == null || value.isBlank() || "null".equalsIgnoreCase(value)) ? null : value;
+    }
+
+    private String buildBodyWithContext(Email email) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("De: ").append(email.getSenderName()).append(" <").append(email.getSenderEmail()).append(">\n");
+        if (email.getCcAddresses() != null && !email.getCcAddresses().isBlank()) {
+            sb.append("CC: ").append(email.getCcAddresses()).append("\n");
+        }
+        sb.append("Asunto: ").append(email.getSubject()).append("\n");
+        sb.append("---\n");
+        if (email.getBody() != null) {
+            sb.append(email.getBody());
+        }
+        return sb.toString();
     }
 }

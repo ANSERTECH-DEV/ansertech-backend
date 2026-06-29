@@ -31,15 +31,15 @@ public class Product {
     @Column(length = 50)
     private String unit;
 
-    @Column(name = "stock_quantity", precision = 10, scale = 3)
+    @Column(name = "stock_quantity")
     @Builder.Default
     private BigDecimal stockQuantity = BigDecimal.ZERO;
 
-    @Column(name = "min_stock_threshold", precision = 10, scale = 3)
+    @Column(name = "min_stock_threshold")
     @Builder.Default
     private BigDecimal minStockThreshold = BigDecimal.valueOf(5);
 
-    @Column(name = "unit_price", precision = 12, scale = 2)
+    @Column(name = "unit_price")
     private BigDecimal unitPrice;
 
     @Column(length = 10)

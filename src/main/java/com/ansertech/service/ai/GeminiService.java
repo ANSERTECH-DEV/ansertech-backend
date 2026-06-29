@@ -1,23 +1,23 @@
 package com.ansertech.service.ai;
 
-import com.ansertech.service.inventory.InventoryService;
+import com.ansertech.domain.entity.Product;
+import com.ansertech.domain.entity.RfqItem;
+import com.ansertech.dto.response.StockCheckItemResponse;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.cloud.vertexai.VertexAI;
 import com.google.cloud.vertexai.api.*;
-import com.google.cloud.vertexai.generativeai.ContentMaker;
 import com.google.cloud.vertexai.generativeai.GenerativeModel;
 import com.google.cloud.vertexai.generativeai.ResponseHandler;
 import com.google.protobuf.ByteString;
-import com.google.protobuf.Struct;
-import com.google.protobuf.Value;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
+import java.math.BigDecimal;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.regex.Matcher;
@@ -29,10 +29,9 @@ import java.util.regex.Pattern;
 public class GeminiService {
 
     private final VertexAI vertexAI;
-    private final InventoryService inventoryService;
     private final ObjectMapper objectMapper;
 
-    @Value("${vertex-ai.model}")
+    @org.springframework.beans.factory.annotation.Value("${vertex-ai.model}")
     private String modelName;
 
     private static final String CLASSIFICATION_PROMPT = """
@@ -89,40 +88,6 @@ public class GeminiService {
             %s
             """;
 
-    private static final String ANALYSIS_PROMPT = """
-            Eres un asistente de cotización experto en el sector minero-industrial peruano.
-
-            Basándote en los datos del RFQ y los resultados de inventario, genera:
-            1. Ítems de cotización con precios sugeridos
-            2. Predicción de probabilidad de conversión (0.0 a 1.0)
-            3. Alertas si hay productos sin stock o stock bajo
-            4. Recomendaciones comerciales
-
-            RFQ:
-            %s
-
-            Resultados de inventario:
-            %s
-
-            Responde ÚNICAMENTE en formato JSON:
-            {
-              "quotation_items": [
-                {
-                  "product_description": "descripción",
-                  "quantity": 1.0,
-                  "unit": "unidad",
-                  "unit_price": 0.0,
-                  "subtotal": 0.0,
-                  "availability_status": "IN_STOCK | OUT_OF_STOCK | ON_ORDER"
-                }
-              ],
-              "conversion_probability": 0.75,
-              "conversion_factors": ["factor1"],
-              "alerts": [{"type": "LOW_STOCK", "product": "...", "current_stock": 2}],
-              "recommendations": ["recomendación 1"],
-              "ai_summary": "Resumen ejecutivo en español"
-            }
-            """;
 
     public JsonNode classifyEmail(String sender, String subject, String body) {
         String prompt = String.format(CLASSIFICATION_PROMPT, sender, subject,
@@ -165,94 +130,28 @@ public class GeminiService {
         }
     }
 
-    public JsonNode analyzeAndGenerateQuotation(String rfqJson, String inventoryResultsJson) {
-        String prompt = String.format(ANALYSIS_PROMPT, rfqJson, inventoryResultsJson);
-        return callGeminiWithToolCalling(prompt);
-    }
+    private static final String ANALYSIS_SIMPLE_PROMPT = """
+            Eres un asesor comercial de Ansertech Perú S.A.C. especializado en el sector minero-industrial.
 
-    // Tool Calling loop: Gemini puede llamar check_inventory hasta 5 veces
-    private JsonNode callGeminiWithToolCalling(String prompt) {
-        try {
-            FunctionDeclaration checkInventoryTool = FunctionDeclaration.newBuilder()
-                    .setName("check_inventory")
-                    .setDescription("Verifica disponibilidad y stock de un producto en el inventario de Ansertech")
-                    .setParameters(Schema.newBuilder()
-                            .setType(Type.OBJECT)
-                            .putProperties("product_description", Schema.newBuilder()
-                                    .setType(Type.STRING)
-                                    .setDescription("Descripción o nombre del producto")
-                                    .build())
-                            .putProperties("quantity_needed", Schema.newBuilder()
-                                    .setType(Type.NUMBER)
-                                    .setDescription("Cantidad requerida")
-                                    .build())
-                            .addRequired("product_description")
-                            .build())
-                    .build();
+            Analiza la siguiente solicitud de cotización junto con los resultados de disponibilidad de inventario
+            ya procesados. No necesitas buscar precios — están incluidos en los resultados de inventario.
 
-            Tool tool = Tool.newBuilder().addFunctionDeclarations(checkInventoryTool).build();
+            RFQ:
+            %s
 
-            GenerativeModel model = new GenerativeModel(modelName, vertexAI)
-                    .withTools(List.of(tool));
+            Resultados de inventario (pre-procesados):
+            %s
 
-            List<Content> history = new ArrayList<>();
-            history.add(ContentMaker.fromString(prompt));
-
-            int maxIterations = 5;
-            for (int i = 0; i < maxIterations; i++) {
-                GenerateContentResponse response = model.generateContent(history);
-                Candidate candidate = response.getCandidates(0);
-                Content modelContent = candidate.getContent();
-                history.add(modelContent);
-
-                boolean hasFunctionCall = modelContent.getPartsList().stream()
-                        .anyMatch(Part::hasFunctionCall);
-
-                if (!hasFunctionCall) {
-                    String text = ResponseHandler.getText(response);
-                    return parseJson(text);
-                }
-
-                List<Part> toolResults = new ArrayList<>();
-                for (Part part : modelContent.getPartsList()) {
-                    if (part.hasFunctionCall()) {
-                        FunctionCall fc = part.getFunctionCall();
-                        String result = executeToolCall(fc);
-                        toolResults.add(Part.newBuilder()
-                                .setFunctionResponse(FunctionResponse.newBuilder()
-                                        .setName(fc.getName())
-                                        .setResponse(Struct.newBuilder()
-                                                .putFields("result", Value.newBuilder()
-                                                        .setStringValue(result).build())
-                                                .build())
-                                        .build())
-                                .build());
-                    }
-                }
-                history.add(Content.newBuilder().setRole("tool").addAllParts(toolResults).build());
+            Responde ÚNICAMENTE en formato JSON:
+            {
+              "conversion_probability": 0.75,
+              "ai_summary": "Resumen ejecutivo en español (2-3 oraciones sobre el pedido y su viabilidad)"
             }
+            """;
 
-            return callGemini(prompt);
-        } catch (Exception e) {
-            log.error("Error en tool calling: {}", e.getMessage());
-            return callGemini(prompt);
-        }
-    }
-
-    private String executeToolCall(FunctionCall fc) {
-        try {
-            if ("check_inventory".equals(fc.getName())) {
-                Map<String, Value> args = fc.getArgs().getFieldsMap();
-                String description = args.getOrDefault("product_description",
-                        Value.newBuilder().setStringValue("").build()).getStringValue();
-                double qty = args.getOrDefault("quantity_needed",
-                        Value.newBuilder().setNumberValue(1).build()).getNumberValue();
-                return inventoryService.checkAvailabilityJson(description, qty);
-            }
-        } catch (Exception e) {
-            log.warn("Error ejecutando tool {}: {}", fc.getName(), e.getMessage());
-        }
-        return "{\"error\": \"tool_execution_failed\"}";
+    public JsonNode analyzeRfq(String rfqJson, String inventoryJson) {
+        String prompt = String.format(ANALYSIS_SIMPLE_PROMPT, rfqJson, inventoryJson);
+        return callGemini(prompt);
     }
 
     private JsonNode callGemini(String prompt) {
@@ -265,6 +164,133 @@ public class GeminiService {
             log.error("Error llamando a Gemini: {}", e.getMessage());
             return objectMapper.createObjectNode().put("error", e.getMessage());
         }
+    }
+
+    private static final String STOCK_MATCH_PROMPT = """
+            Eres un asistente especializado en matching de productos industriales para Ansertech Perú S.A.C.
+
+            Tu tarea: para cada ítem de la RFQ, encuentra el producto del catálogo con mayor similitud semántica.
+            Compara la descripción del ítem con el campo "description" (descripción larga) de cada producto del catálogo.
+            Entiende sinónimos, abreviaciones, variaciones de redacción técnica en español e inglés, y plurales.
+
+            ÍTEMS SOLICITADOS EN LA RFQ:
+            %s
+
+            CATÁLOGO DE PRODUCTOS (id, sku, nombre, descripción completa, stock_actual, unidad):
+            %s
+
+            Responde ÚNICAMENTE con un array JSON, un objeto por cada ítem de la RFQ:
+            [
+              {
+                "rfq_item_id": 1,
+                "rfq_description": "descripción original del ítem",
+                "quantity_requested": 45.0,
+                "unit_requested": "unidad",
+                "matched": true,
+                "product_id": 1,
+                "product_sku": "CAM-IP-001",
+                "product_name": "Cámara IP industrial",
+                "similarity_score": 0.92,
+                "match_reason": "Coincidencia por descripción de cámara IP para uso industrial",
+                "stock_quantity": 60.0,
+                "stock_unit": "unidad",
+                "stock_sufficient": true
+              }
+            ]
+
+            Reglas:
+            - Si un ítem no tiene coincidencia clara (similitud < 0.4), usa matched=false y omite campos de producto.
+            - stock_sufficient = true cuando stock_quantity >= quantity_requested.
+            - similarity_score entre 0.0 y 1.0.
+            - Incluye TODOS los ítems de la RFQ en el array de respuesta.
+            """;
+
+    public List<StockCheckItemResponse> matchRfqItemsToProducts(List<RfqItem> rfqItems, List<Product> products) {
+        try {
+            String rfqItemsJson = buildRfqItemsJson(rfqItems);
+            String catalogJson  = buildProductCatalogJson(products);
+            String prompt = String.format(STOCK_MATCH_PROMPT, rfqItemsJson, catalogJson);
+
+            JsonNode result = callGemini(prompt);
+            return parseStockCheckResult(result, rfqItems, products);
+        } catch (Exception e) {
+            log.error("Error en matching de stock: {}", e.getMessage());
+            return buildFallbackStockCheck(rfqItems);
+        }
+    }
+
+    private String buildRfqItemsJson(List<RfqItem> items) throws Exception {
+        List<Map<String, Object>> list = new ArrayList<>();
+        for (RfqItem item : items) {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("id",          item.getId());
+            m.put("description", item.getProductDescription() != null ? item.getProductDescription() : "");
+            m.put("quantity",    item.getQuantity() != null ? item.getQuantity().doubleValue() : 1.0);
+            m.put("unit",        item.getUnit() != null ? item.getUnit() : "unidad");
+            list.add(m);
+        }
+        return objectMapper.writeValueAsString(list);
+    }
+
+    private String buildProductCatalogJson(List<Product> products) throws Exception {
+        List<Map<String, Object>> list = new ArrayList<>();
+        for (Product p : products) {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("id",          p.getId());
+            m.put("sku",         p.getSku());
+            m.put("name",        p.getName());
+            m.put("description", p.getDescription() != null ? p.getDescription() : "");
+            m.put("stock",       p.getStockQuantity() != null ? p.getStockQuantity() : BigDecimal.ZERO);
+            m.put("unit",        p.getUnit() != null ? p.getUnit() : "unidad");
+            list.add(m);
+        }
+        return objectMapper.writeValueAsString(list);
+    }
+
+    private List<StockCheckItemResponse> parseStockCheckResult(JsonNode root, List<RfqItem> rfqItems, List<Product> products) {
+        List<StockCheckItemResponse> result = new ArrayList<>();
+        if (!root.isArray()) return buildFallbackStockCheck(rfqItems);
+        Map<Long, Product> productsById = new java.util.HashMap<>();
+        for (Product p : products) productsById.put(p.getId(), p);
+        for (JsonNode node : root) {
+            boolean matched = node.path("matched").asBoolean(false);
+            StockCheckItemResponse.StockCheckItemResponseBuilder builder = StockCheckItemResponse.builder()
+                    .rfqItemId(node.path("rfq_item_id").asLong(0))
+                    .rfqDescription(node.path("rfq_description").asText(""))
+                    .quantityRequested(node.path("quantity_requested").asDouble(1.0))
+                    .unitRequested(node.path("unit_requested").asText("unidad"))
+                    .matched(matched);
+            if (matched) {
+                long productId = node.path("product_id").asLong(0);
+                Product product = productsById.get(productId);
+                builder
+                    .productId(productId)
+                    .productSku(node.path("product_sku").asText(""))
+                    .productName(node.path("product_name").asText(""))
+                    .similarityScore(node.path("similarity_score").asDouble(0.0))
+                    .matchReason(node.path("match_reason").asText(""))
+                    .stockQuantity(BigDecimal.valueOf(node.path("stock_quantity").asDouble(0.0)))
+                    .stockUnit(node.path("stock_unit").asText("unidad"))
+                    .stockSufficient(node.path("stock_sufficient").asBoolean(false))
+                    .unitPrice(product != null ? product.getUnitPrice() : null);
+            }
+            result.add(builder.build());
+        }
+        return result;
+    }
+
+    private List<StockCheckItemResponse> buildFallbackStockCheck(List<RfqItem> rfqItems) {
+        List<StockCheckItemResponse> result = new ArrayList<>();
+        for (RfqItem item : rfqItems) {
+            result.add(StockCheckItemResponse.builder()
+                    .rfqItemId(item.getId())
+                    .rfqDescription(item.getProductDescription() != null ? item.getProductDescription() : "")
+                    .quantityRequested(item.getQuantity() != null ? item.getQuantity().doubleValue() : 1.0)
+                    .unitRequested(item.getUnit() != null ? item.getUnit() : "unidad")
+                    .matched(false)
+                    .build());
+        }
+        return result;
     }
 
     private JsonNode parseJson(String raw) {

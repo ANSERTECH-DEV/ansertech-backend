@@ -24,4 +24,10 @@ public class AuthController {
     public ResponseEntity<ApiResponse<AuthResponse>> login(@Valid @RequestBody LoginRequest req) {
         return ResponseEntity.ok(ApiResponse.ok(authService.login(req)));
     }
+
+    @PostMapping("/register")
+    @Operation(summary = "Registro de nuevo usuario")
+    public ResponseEntity<ApiResponse<AuthResponse>> register(@Valid @RequestBody com.ansertech.dto.request.RegisterRequest req) {
+        return ResponseEntity.ok(ApiResponse.ok(authService.register(req)));
+    }
 }

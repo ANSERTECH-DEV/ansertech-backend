@@ -43,7 +43,7 @@ public class Rfq {
     @Column(name = "urgency", length = 10)
     private String urgency;
 
-    @Column(name = "extraction_confidence", precision = 5, scale = 4)
+    @Column(name = "extraction_confidence")
     private Double extractionConfidence;
 
     @Column(name = "raw_extracted_json", columnDefinition = "TEXT")
@@ -60,10 +60,11 @@ public class Rfq {
     @Column(columnDefinition = "TEXT")
     private String notes;
 
-    @Column(name = "conversion_probability", precision = 5, scale = 4)
+    @Column(name = "conversion_probability")
     private Double conversionProbability;
 
     @OneToMany(mappedBy = "rfq", cascade = CascadeType.ALL, orphanRemoval = true)
+    @OrderBy("id ASC")
     @Builder.Default
     private List<RfqItem> items = new ArrayList<>();
 
