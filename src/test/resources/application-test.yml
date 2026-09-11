@@ -1,0 +1,51 @@
+spring:
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+    show-sql: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+  # spring-boot-starter-oauth2-client auto-configura ClientRegistrationRepository al
+  # arrancar el contexto y VALIDA que el client-id no esté vacío, aunque en runtime la
+  # app nunca usa este flujo OAuth2 (Graph se autentica vía Device Code Flow en
+  # GraphConfiguration, no vía Spring Security OAuth2 login). Sin este valor, incluso
+  # el AnsertechApplicationTests original falla al arrancar si GRAPH_CLIENT_ID no está
+  # seteado en el entorno — hallazgo real, no introducido por esta suite de tests.
+  security:
+    oauth2:
+      client:
+        registration:
+          microsoft:
+            client-id: test-oauth2-client-id
+
+# El datasource real lo provee Testcontainers vía @ServiceConnection; estos valores
+# nunca se usan salvo que un test arranque el contexto sin contenedor.
+azure:
+  storage:
+    connection-string: ""
+    container-name: test-quotations
+
+jwt:
+  secret: test-only-secret-key-not-for-production-min-256-bits-ansertech
+  expiration-ms: 28800000
+
+vertex-ai:
+  project-id: test-project
+  location: us-central1
+  model: gemini-2.5-flash
+  credentials-file: ""
+
+microsoft:
+  graph:
+    client-id: test-graph-client-id
+    tenant-id: consumers
+  polling:
+    enabled: false
+  classification:
+    confidence-threshold: 0.85
+
+logging:
+  level:
+    com.ansertech: WARN
+    org.springframework.security: WARN

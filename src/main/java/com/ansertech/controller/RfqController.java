@@ -8,6 +8,7 @@ import com.ansertech.dto.response.ApiResponse;
 import com.ansertech.dto.response.RfqResponse;
 import com.ansertech.dto.response.StockCheckItemResponse;
 import com.ansertech.dto.response.StockCheckResultResponse;
+import com.ansertech.exception.BusinessException;
 import com.ansertech.exception.ResourceNotFoundException;
 import com.ansertech.repository.RfqRepository;
 import com.ansertech.repository.RfqStockCheckResultRepository;
@@ -73,6 +74,7 @@ public class RfqController {
     @Operation(summary = "Confirmar RFQ, generar cotización, PDF y enviar email al cliente")
     public ResponseEntity<ApiResponse<Long>> confirm(@PathVariable Long id) {
         Rfq rfq = findOrThrow(id);
+        requireTransition(rfq, RfqStatus.QUOTING);
         rfq.setStatus(RfqStatus.QUOTING);
         rfqRepository.save(rfq);
 
@@ -136,9 +138,17 @@ public class RfqController {
     @Operation(summary = "Rechazar RFQ sin generar cotización")
     public ResponseEntity<ApiResponse<String>> reject(@PathVariable Long id) {
         Rfq rfq = findOrThrow(id);
+        requireTransition(rfq, RfqStatus.REJECTED);
         rfq.setStatus(RfqStatus.REJECTED);
         rfqRepository.save(rfq);
         return ResponseEntity.ok(ApiResponse.ok("REJECTED", "RFQ #" + id + " rechazado"));
+    }
+
+    private void requireTransition(Rfq rfq, RfqStatus target) {
+        if (!rfq.getStatus().canTransitionTo(target)) {
+            throw new BusinessException(
+                    "Transición de estado inválida: " + rfq.getStatus() + " → " + target);
+        }
     }
 
     private Rfq findOrThrow(Long id) {

@@ -24,6 +24,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.time.Clock;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -46,6 +47,7 @@ public class QuotationService {
     private final QuotationPdfService pdfService;
     private final EmailSenderService emailSenderService;
     private final ObjectMapper objectMapper;
+    private final Clock clock;
 
     public Quotation generateFromRfq(Rfq rfq) {
         try {
@@ -206,7 +208,7 @@ public class QuotationService {
                 .quotationNumber(number)
                 .status(QuotationStatus.DRAFT)
                 .currency("PEN")
-                .validUntil(LocalDate.now().plusDays(15))
+                .validUntil(LocalDate.now(clock).plusDays(15))
                 .conversionProbability(ai.path("conversion_probability").asDouble(0.5))
                 .aiSummary(ai.path("ai_summary").asText(""))
                 .items(items)
@@ -253,7 +255,7 @@ public class QuotationService {
         Quotation q = Quotation.builder()
                 .rfq(rfq).quotationNumber(generateQuotationNumber())
                 .status(QuotationStatus.DRAFT).currency("PEN")
-                .validUntil(LocalDate.now().plusDays(15))
+                .validUntil(LocalDate.now(clock).plusDays(15))
                 .subtotal(BigDecimal.ZERO).igv(BigDecimal.ZERO).total(BigDecimal.ZERO)
                 .aiSummary("Generación automática fallida — completar manualmente")
                 .items(new ArrayList<>()).build();
@@ -263,7 +265,7 @@ public class QuotationService {
 
 
     private String generateQuotationNumber() {
-        int year = LocalDate.now().getYear();
+        int year = LocalDate.now(clock).getYear();
         Integer maxSeq = quotationRepository.findMaxSequenceForYear(year);
         int next = (maxSeq != null ? maxSeq : 0) + 1;
         return String.format("COT-%d-%04d", year, next);

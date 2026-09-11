@@ -57,8 +57,8 @@ microsoft:
     tenant-id: ${GRAPH_TENANT_ID:consumers}
 
   polling:
-    enabled: false
-    fixed-delay-ms: 10000
+    enabled: true
+    fixed-delay-ms: 240000
     initial-delay-ms: 10000
     max-messages-per-poll: 5
 
