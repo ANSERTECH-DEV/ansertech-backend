@@ -31,7 +31,7 @@ services:
       DB_PASSWORD: ${DB_PASSWORD:-admin}
       GCP_PROJECT_ID: ${GCP_PROJECT_ID}
       GCP_LOCATION: ${GCP_LOCATION:-us-central1}
-      GOOGLE_APPLICATION_CREDENTIALS: /app/gcp-credentials.json
+      GOOGLE_APPLICATION_CREDENTIALS: /app/gcp-credentials.json.old
       EMAIL_PROVIDER: ${EMAIL_PROVIDER:-gmail}
       GMAIL_CREDENTIALS_FILE: /app/gmail-credentials.json
       GMAIL_USER_EMAIL: ${GMAIL_USER_EMAIL}
@@ -46,7 +46,7 @@ services:
         condition: service_healthy
     volumes:
       - ./storage:/app/storage
-      - ./gcp-credentials.json:/app/gcp-credentials.json:ro
+      - ./gcp-credentials.json.old:/app/gcp-credentials.json.old:ro
       - ./gmail-credentials.json:/app/gmail-credentials.json:ro
     restart: unless-stopped
 

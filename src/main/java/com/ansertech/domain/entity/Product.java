@@ -5,6 +5,7 @@ import lombok.*;
 import org.hibernate.annotations.UpdateTimestamp;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.LocalDateTime;
 
 @Entity
@@ -39,7 +40,8 @@ public class Product {
     @Builder.Default
     private BigDecimal minStockThreshold = BigDecimal.valueOf(5);
 
-    @Column(name = "unit_price")
+    /** Soles enteros, sin decimales (V10): 4555.93 se guarda como 4556. */
+    @Column(name = "unit_price", precision = 12, scale = 0)
     private BigDecimal unitPrice;
 
     @Column(length = 10)
@@ -58,4 +60,13 @@ public class Product {
     @UpdateTimestamp
     @Column(name = "updated_at")
     private LocalDateTime updatedAt;
+
+    /** Cubre todas las vías de escritura: crear, editar y carga masiva. */
+    @PrePersist
+    @PreUpdate
+    void roundUnitPrice() {
+        if (unitPrice != null) {
+            unitPrice = unitPrice.setScale(0, RoundingMode.HALF_UP);
+        }
+    }
 }

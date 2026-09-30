@@ -52,7 +52,7 @@ application_default_credentials.json
 *.json
 client_secret*.json
 credentials*.json
-gcp-credentials.json
+gcp-credentials.*
 
 # Token storage (Gmail OAuth)
 tokens/

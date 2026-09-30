@@ -4,9 +4,13 @@ import com.ansertech.domain.entity.Product;
 import com.ansertech.dto.request.ProductRequest;
 import com.ansertech.dto.request.StockUpdateRequest;
 import com.ansertech.dto.response.ApiResponse;
+import com.ansertech.dto.response.ImportResultResponse;
 import com.ansertech.dto.response.ProductResponse;
+import com.ansertech.exception.BusinessException;
 import com.ansertech.repository.ProductRepository;
+import com.ansertech.service.inventory.InventoryImportService;
 import com.ansertech.service.inventory.InventoryService;
+import com.ansertech.service.inventory.InventoryTemplateService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
@@ -22,6 +26,7 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.io.ByteArrayOutputStream;
 import java.time.LocalDate;
@@ -34,6 +39,8 @@ import java.util.List;
 public class InventoryController {
 
     private final InventoryService inventoryService;
+    private final InventoryImportService inventoryImportService;
+    private final InventoryTemplateService inventoryTemplateService;
     private final ProductRepository productRepository;
 
     @GetMapping
@@ -81,6 +88,36 @@ public class InventoryController {
         return ResponseEntity.ok(ApiResponse.ok(inventoryService.getLowStock()));
     }
 
+    @PostMapping(value = "/import", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    @PreAuthorize("hasRole('ADMIN')")
+    @Operation(summary = "Carga masiva desde Excel (mismo formato que /export). dryRun=true solo previsualiza")
+    public ResponseEntity<ApiResponse<ImportResultResponse>> importExcel(
+            @RequestParam("file") MultipartFile file,
+            @RequestParam(defaultValue = "true") boolean dryRun) throws Exception {
+        if (file.isEmpty()) {
+            throw new BusinessException("El archivo está vacío");
+        }
+        String filename = file.getOriginalFilename() != null ? file.getOriginalFilename().toLowerCase() : "";
+        if (!filename.endsWith(".xlsx")) {
+            throw new BusinessException("Formato no soportado: sube un archivo Excel .xlsx");
+        }
+        ImportResultResponse result = inventoryImportService.importProducts(file.getInputStream(), dryRun);
+        String message = dryRun
+                ? "Vista previa: nada se ha guardado todavía"
+                : String.format("Carga completada: %d creados, %d actualizados, %d con error",
+                        result.getCreated(), result.getUpdated(), result.getErrors());
+        return ResponseEntity.ok(ApiResponse.ok(result, message));
+    }
+
+    @GetMapping("/import/template")
+    @Operation(summary = "Descargar plantilla Excel para la carga masiva (hoja Inventario + Instrucciones)")
+    public ResponseEntity<byte[]> downloadImportTemplate() {
+        return ResponseEntity.ok()
+                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=plantilla-inventario.xlsx")
+                .contentType(MediaType.parseMediaType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
+                .body(inventoryTemplateService.buildTemplate());
+    }
+
     @GetMapping("/export")
     @Operation(summary = "Exportar inventario completo a Excel")
     public ResponseEntity<byte[]> exportExcel() throws Exception {
@@ -111,6 +148,10 @@ public class InventoryController {
             DataFormat fmt = wb.createDataFormat();
             numberStyle.setDataFormat(fmt.getFormat("#,##0.00"));
             numberStyle.setVerticalAlignment(VerticalAlignment.TOP);
+
+            CellStyle priceStyle = wb.createCellStyle();   // precios en soles enteros (V10)
+            priceStyle.setDataFormat(fmt.getFormat("#,##0"));
+            priceStyle.setVerticalAlignment(VerticalAlignment.TOP);
 
             // ── Cabecera ─────────────────────────────────────────────────────
             String[] cols = {"ID", "SKU", "NOMBRE", "CATEGORÍA", "DESCRIPCIÓN",
@@ -147,7 +188,7 @@ public class InventoryController {
 
                 Cell priceCell = row.createCell(8);
                 priceCell.setCellValue(p.getUnitPrice() != null ? p.getUnitPrice().doubleValue() : 0);
-                priceCell.setCellStyle(numberStyle);
+                priceCell.setCellStyle(priceStyle);
 
                 cell(row, 9,  p.getCurrency() != null ? p.getCurrency() : "PEN", dataStyle);
                 cell(row, 10, p.getSupplierName() != null ? p.getSupplierName() : "", dataStyle);
