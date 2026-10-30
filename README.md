@@ -32,7 +32,7 @@ Estados del RFQ: `PROCESSING → PENDING_REVIEW → QUOTING → QUOTED` (o `→ 
 | `JWT_SECRET` | Sí | secreto hardcodeado ⚠️ |
 | `GCP_PROJECT_ID`, `GCP_LOCATION`, `GOOGLE_APPLICATION_CREDENTIALS` | Sí | — |
 | `GRAPH_CLIENT_ID`, `GRAPH_TENANT_ID` | Sí | `""`, `consumers` |
-| `AZURE_STORAGE_CONNECTION_STRING` | Sí (para PDFs) | — |
+| `AZURE_STORAGE_CONNECTION_STRING` | Sí (para PDFs) | — (cuenta actual: `ansertechsa`, desde 2026-09-30) |
 | `AZURE_STORAGE_CONTAINER` | No | `quotations` |
 | `JWT_EXPIRATION_MS`, `SERVER_PORT`, `STORAGE_PATH` | No | `28800000`, `8080`, `./storage` |
 
@@ -54,6 +54,8 @@ mvn spring-boot:run
 ```
 
 **Primera vez en una máquina:** Microsoft Graph usa Device Code Flow con cuenta personal. La consola muestra un código para ingresar en https://microsoft.com/devicelogin; el token queda cacheado (Keychain en macOS, `ansertech-graph-cache`) por unos 90 días.
+
+**Logs:** además de la consola, el backend escribe `logs/ansertech-backend.log` (cambia la ruta con `LOG_FILE`; la carpeta está en `.gitignore`). Si una cotización no llega al cliente, busca ahí `Error generando/subiendo PDF`, `Error enviando email` o `REQUIRES AUTHENTICATION`.
 
 **Polling de correo:** se activa con `microsoft.polling.enabled: true` en `application.yml` (revisa cada 4 min, hasta 5 correos por ciclo). También se puede forzar con `POST /api/emails/trigger-polling` (ADMIN).
 
@@ -103,6 +105,8 @@ com.ansertech/
 - **`POST /api/auth/register` es público y acepta `role: ADMIN`**: cualquiera puede crearse una cuenta de administrador. Corregir antes de desplegar.
 - `confirm`, `reject` y `reclassify` no exigen rol.
 - `EmailController.reclassify` puede lanzar NPE si el body no trae `status`.
+- **RFQ pegados al apagar el backend:** si se apaga durante una aprobación, el RFQ queda en `QUOTING` sin salida, porque `canTransitionTo()` no permite volver a `PENDING_REVIEW`. Los RFQ que estaban en la cola de stock-check, que vive en memoria, quedan en `PROCESSING`. Al arrancar no se recupera nada: hay que corregirlos en pgAdmin (ver `proyecto_tesis_resumen.md` §5, problema #18). Evita detener el backend mientras se aprueba o procesa algo.
+- **Fallo silencioso al aprobar:** si falla el PDF o el correo, el error solo queda en el log, el RFQ pasa igual a `QUOTED` y, si falló el PDF, se guarda una segunda cotización vacía. Si el PDF da `UnknownHostException ...blob.core.windows.net`, la cuenta de Azure Storage no existe: revisa `AZURE_STORAGE_CONNECTION_STRING`.
 - `AuditLog` existe pero ningún servicio escribe en ella.
 - Graph atado a cuenta personal (Device Code Flow): falta migrar a Client Credentials con una cuenta Microsoft 365.
 

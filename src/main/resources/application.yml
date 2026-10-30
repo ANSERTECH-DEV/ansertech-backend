@@ -63,7 +63,7 @@ microsoft:
 
   polling:
     enabled: true
-    fixed-delay-ms: 240000
+    fixed-delay-ms: 36000000
     initial-delay-ms: 10000
     max-messages-per-poll: 5
 
