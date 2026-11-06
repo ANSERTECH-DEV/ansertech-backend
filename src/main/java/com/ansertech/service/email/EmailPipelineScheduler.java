@@ -34,6 +34,21 @@ public class EmailPipelineScheduler {
     @Value("${microsoft.polling.max-messages-per-poll:50}")
     private int maxResults;
 
+    public void runPipelineManually() {
+        // ejecuta polling
+        log.info("Iniciando polling de correos — {}", LocalDateTime.now());
+        try {
+            List<EmailPollingService.RawEmailData> rawEmails = pollingService.fetchUnreadEmails(maxResults);
+            log.info("Correos nuevos encontrados: {}", rawEmails.size());
+
+            for (EmailPollingService.RawEmailData raw : rawEmails) {
+                processEmail(raw);
+            }
+        } catch (Exception e) {
+            log.error("Error en ciclo de polling: {}", e.getMessage(), e);
+        }
+    }
+
     @Scheduled(fixedDelayString = "${microsoft.polling.fixed-delay-ms:2400000}")
     public void runPipeline() {
         if (!pollingEnabled) {

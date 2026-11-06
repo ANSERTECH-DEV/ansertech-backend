@@ -62,8 +62,8 @@ microsoft:
     tenant-id: ${GRAPH_TENANT_ID:consumers}
 
   polling:
-    enabled: true
-    fixed-delay-ms: 36000000
+    enabled: false
+    fixed-delay-ms: 20000
     initial-delay-ms: 10000
     max-messages-per-poll: 5
 
@@ -77,7 +77,7 @@ storage:
 
 # ===== CORS =====
 cors:
-  allowed-origins: ${CORS_ORIGINS:http://localhost:4200}
+  allowed-origins: ${CORS_ORIGINS:http://localhost:4200,https://ansertechweb.netlify.app}
 
 # ===== Springdoc / Swagger =====
 springdoc:

@@ -89,7 +89,8 @@ public class EmailController {
     @PreAuthorize("hasRole('ADMIN')")
     @Operation(summary = "Forzar polling manual de correos")
     public ResponseEntity<ApiResponse<String>> triggerPolling() {
-        scheduler.runPipeline();
+        //scheduler.runPipeline();
+        scheduler.runPipelineManually();
         return ResponseEntity.ok(ApiResponse.ok("Polling ejecutado", "Pipeline iniciado"));
     }
 
