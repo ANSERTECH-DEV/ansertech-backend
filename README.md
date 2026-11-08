@@ -35,6 +35,7 @@ Estados del RFQ: `PROCESSING → PENDING_REVIEW → QUOTING → QUOTED` (o `→ 
 | `AZURE_STORAGE_CONNECTION_STRING` | Sí (para PDFs) | — (cuenta actual: `ansertechsa`, desde 2026-09-30) |
 | `AZURE_STORAGE_CONTAINER` | No | `quotations` |
 | `JWT_EXPIRATION_MS`, `SERVER_PORT`, `STORAGE_PATH` | No | `28800000`, `8080`, `./storage` |
+| `CORS_ORIGINS` | No | `http://localhost:4200,https://ansertechweb.netlify.app` (Netlify agregado el 2026-10-30) |
 
 ⚠️ Los defaults marcados no son seguros para producción: si falta la variable, el backend arranca igual con esos valores.
 
@@ -57,7 +58,23 @@ mvn spring-boot:run
 
 **Logs:** además de la consola, el backend escribe `logs/ansertech-backend.log` (cambia la ruta con `LOG_FILE`; la carpeta está en `.gitignore`). Si una cotización no llega al cliente, busca ahí `Error generando/subiendo PDF`, `Error enviando email` o `REQUIRES AUTHENTICATION`.
 
-**Polling de correo:** se activa con `microsoft.polling.enabled: true` en `application.yml` (revisa cada 4 min, hasta 5 correos por ciclo). También se puede forzar con `POST /api/emails/trigger-polling` (ADMIN).
+**Polling de correo (desde 2026-11-06 viene apagado):** `application.yml` trae `microsoft.polling.enabled: false`, así que el backend no lee Outlook por su cuenta. Para leer los correos se usa `POST /api/emails/trigger-polling` (ADMIN), que llama a `EmailPipelineScheduler.runPipelineManually()`: corre aunque `enabled` sea `false`, procesa hasta 5 correos no leídos (`max-messages-per-poll`) y no responde hasta terminar (las llamadas a Gemini van dentro del request, así que puede demorar varios segundos por correo). La respuesta dice "Pipeline iniciado", pero en realidad ya terminó; el resultado se ve en el log. El frontend tiene `EmailService.triggerPolling()`, pero ningún botón lo usa todavía. Si se reactiva el polling automático, revisa antes `fixed-delay-ms`: ahora está en `20000` (cada 20 s), no en los 4 min de antes.
+
+## Docker
+
+`Dockerfile` de dos etapas: compila con `maven:3.9.9-eclipse-temurin-17` (descarga primero las dependencias para aprovechar la caché) y ejecuta con `eclipse-temurin:17-jre-alpine` como usuario sin privilegios `ansertech`, en el puerto 8080.
+
+```bash
+docker build -t ansertech-backend .
+docker run -p 8080:8080 \
+  -v "$PWD/gcp-credentials.json:/app/gcp-credentials.json:ro" \
+  -e GOOGLE_APPLICATION_CREDENTIALS=/app/gcp-credentials.json \
+  -e DB_HOST=... -e DB_USER=... -e DB_PASSWORD=... \
+  -e JWT_SECRET=... -e GRAPH_CLIENT_ID=... -e AZURE_STORAGE_CONNECTION_STRING=... \
+  ansertech-backend
+```
+
+`.dockerignore` deja fuera `target/`, `logs/`, `storage/`, `.env`, `.git/`, `.idea/` y cualquier `*credentials*.json`, así que **las credenciales de GCP no van dentro de la imagen**: hay que montarlas o inyectarlas al ejecutar. El token de Microsoft Graph tampoco viaja: en un contenedor nuevo, el Device Code Flow pide de nuevo el código en el log.
 
 > `docker-compose.yml` no está operativo tal como está: el servicio `backend` depende de `postgres`, que está comentado, y todavía declara variables de Gmail.
 

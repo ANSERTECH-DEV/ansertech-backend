@@ -11,6 +11,7 @@ import com.ansertech.repository.ProductRepository;
 import com.ansertech.repository.QuotationRepository;
 import com.ansertech.repository.RfqStockCheckResultRepository;
 import com.ansertech.service.ai.GeminiService;
+import com.ansertech.service.audit.AuditService;
 import com.ansertech.service.email.EmailSenderService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -52,6 +53,7 @@ class QuotationServiceTest {
     @Mock private RfqStockCheckResultRepository stockCheckResultRepository;
     @Mock private GeminiService geminiService;
     @Mock private QuotationPdfService pdfService;
+    @Mock private AuditService auditService;
     @Mock private EmailSenderService emailSenderService;
 
     // StockCheckItemResponse no tiene @NoArgsConstructor: Jackson solo puede construirlo
@@ -68,7 +70,7 @@ class QuotationServiceTest {
         fixedClock = Clock.fixed(Instant.parse("2026-07-03T15:00:00Z"), LIMA);
         quotationService = new QuotationService(
                 quotationRepository, productRepository, stockCheckResultRepository,
-                geminiService, pdfService, emailSenderService, objectMapper, fixedClock);
+                geminiService, pdfService, emailSenderService, objectMapper, fixedClock, auditService);
 
         lenient().when(quotationRepository.save(any(Quotation.class)))
                 .thenAnswer(inv -> inv.getArgument(0));

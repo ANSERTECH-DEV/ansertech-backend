@@ -4,6 +4,7 @@ import com.ansertech.domain.enums.EmailStatus;
 import com.ansertech.domain.enums.QuotationStatus;
 import com.ansertech.domain.enums.RfqStatus;
 import com.ansertech.dto.response.ApiResponse;
+import com.ansertech.dto.response.DashboardKpisResponse;
 import com.ansertech.dto.response.DashboardStatsResponse;
 import com.ansertech.dto.response.EmailResponse;
 import com.ansertech.dto.response.RfqResponse;
@@ -11,6 +12,11 @@ import com.ansertech.repository.EmailRepository;
 import com.ansertech.repository.ProductRepository;
 import com.ansertech.repository.QuotationRepository;
 import com.ansertech.repository.RfqRepository;
+import com.ansertech.service.dashboard.DashboardService;
+import io.swagger.v3.oas.annotations.Parameter;
+import org.springframework.format.annotation.DateTimeFormat;
+import org.springframework.web.bind.annotation.RequestParam;
+import java.time.LocalDate;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
@@ -33,6 +39,22 @@ public class DashboardController {
     private final RfqRepository rfqRepository;
     private final QuotationRepository quotationRepository;
     private final ProductRepository productRepository;
+    private final DashboardService dashboardService;
+
+    @GetMapping("/kpis")
+    @Operation(summary = "KPIs del periodo (total cotizado, aprobadas, tiempo promedio, tasa de aprobación)",
+            description = "Rango inclusive. Por defecto: desde el 1° del mes actual hasta hoy. "
+                    + "Incluye el periodo anterior de igual duración para comparar.")
+    public ResponseEntity<ApiResponse<DashboardKpisResponse>> kpis(
+            @Parameter(description = "Desde (yyyy-MM-dd), inclusive")
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate from,
+            @Parameter(description = "Hasta (yyyy-MM-dd), inclusive")
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate to) {
+        LocalDate today = LocalDate.now();
+        LocalDate end = to != null ? to : today;
+        LocalDate start = from != null ? from : end.withDayOfMonth(1);
+        return ResponseEntity.ok(ApiResponse.ok(dashboardService.kpis(start, end)));
+    }
 
     @GetMapping("/stats")
     @Operation(summary = "KPIs generales del sistema")

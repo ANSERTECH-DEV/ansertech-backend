@@ -1,5 +1,8 @@
 package com.ansertech.service.email;
 
+import com.ansertech.domain.enums.AuditAction;
+import com.ansertech.service.audit.AuditService;
+
 import com.ansertech.domain.entity.Email;
 import com.ansertech.domain.enums.EmailStatus;
 import com.ansertech.repository.EmailRepository;
@@ -27,6 +30,7 @@ public class EmailPipelineScheduler {
     private final QuotationService quotationService;
     private final EmailRepository emailRepository;
     private final ObjectMapper objectMapper;
+    private final AuditService auditService;
 
     @Value("${microsoft.polling.enabled:false}")
     private boolean pollingEnabled;
@@ -100,10 +104,20 @@ public class EmailPipelineScheduler {
 
         try {
             EmailStatus status = classificationService.classify(email);
+            auditService.recordSystem(AuditAction.EMAIL_CLASSIFIED, "EMAIL", email.getId(),
+                    AuditService.details("remitente", email.getSenderEmail(), "asunto", email.getSubject(),
+                            "clasificacion", status != null ? status.name() : null,
+                            "confianza", email.getSpamConfidence(),
+                            "motivo", email.getClassificationReason()));
 
             if (status == EmailStatus.VALID) {
                 var rfq = rfqExtractionService.extractAndSave(email, raw.attachments());
                 log.info("RFQ {} creado desde email {}", rfq.getId(), email.getId());
+                auditService.recordSystem(AuditAction.RFQ_CREATED, "RFQ", rfq.getId(),
+                        AuditService.details("emailId", email.getId(),
+                                "cliente", rfq.getClientCompany() != null ? rfq.getClientCompany() : rfq.getClientEmail(),
+                                "items", rfq.getItems() != null ? rfq.getItems().size() : 0,
+                                "confianzaExtraccion", rfq.getExtractionConfidence()));
             }
 
             pollingService.markAsRead(raw.externalId());
@@ -111,6 +125,8 @@ public class EmailPipelineScheduler {
             log.error("Error procesando email {}: {}", email.getId(), e.getMessage(), e);
             email.setStatus(EmailStatus.ERROR);
             emailRepository.save(email);
+            auditService.recordSystem(AuditAction.EMAIL_PROCESSING_FAILED, "EMAIL", email.getId(),
+                    AuditService.details("remitente", email.getSenderEmail(), "error", e.getMessage()));
         }
     }
 }

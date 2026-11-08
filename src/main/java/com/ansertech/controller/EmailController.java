@@ -1,5 +1,8 @@
 package com.ansertech.controller;
 
+import com.ansertech.domain.enums.AuditAction;
+import com.ansertech.service.audit.AuditService;
+
 import com.ansertech.domain.entity.Email;
 import com.ansertech.domain.entity.Quotation;
 import com.ansertech.domain.entity.Rfq;
@@ -33,8 +36,12 @@ import org.springframework.web.bind.annotation.*;
 
 import java.io.ByteArrayOutputStream;
 import java.time.Duration;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import com.ansertech.exception.BusinessException;
+import io.swagger.v3.oas.annotations.Parameter;
+import org.springframework.format.annotation.DateTimeFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -50,6 +57,7 @@ public class EmailController {
     private final QuotationRepository quotationRepository;
     private final EmailPipelineScheduler scheduler;
     private final ObjectMapper objectMapper;
+    private final AuditService auditService;
 
     private static final DateTimeFormatter DATE_FMT = DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm");
 
@@ -79,9 +87,14 @@ public class EmailController {
             @RequestBody Map<String, String> body) {
         Email email = emailRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Email", id));
+        EmailStatus previousStatus = email.getStatus();
         EmailStatus newStatus = EmailStatus.valueOf(body.get("status").toUpperCase());
         email.setStatus(newStatus);
         emailRepository.save(email);
+        auditService.record(AuditAction.EMAIL_RECLASSIFIED, "EMAIL", id,
+                AuditService.details("remitente", email.getSenderEmail(), "asunto", email.getSubject(),
+                        "estadoAnterior", previousStatus != null ? previousStatus.name() : null,
+                        "estadoNuevo", newStatus.name()));
         return ResponseEntity.ok(ApiResponse.ok(toResponse(email), "Email reclasificado"));
     }
 
@@ -90,6 +103,7 @@ public class EmailController {
     @Operation(summary = "Forzar polling manual de correos")
     public ResponseEntity<ApiResponse<String>> triggerPolling() {
         //scheduler.runPipeline();
+        auditService.record(AuditAction.EMAIL_POLLING_TRIGGERED, "EMAIL", null, AuditService.details());
         scheduler.runPipelineManually();
         return ResponseEntity.ok(ApiResponse.ok("Polling ejecutado", "Pipeline iniciado"));
     }
@@ -97,10 +111,23 @@ public class EmailController {
     // ── Excel Export ──────────────────────────────────────────────────────────
 
     @GetMapping("/export")
-    @Operation(summary = "Exportar reporte de correos procesados a Excel")
-    public ResponseEntity<byte[]> exportExcel() throws Exception {
-        List<Email> emails = emailRepository.findAll(
-                org.springframework.data.domain.Sort.by("createdAt").ascending());
+    @Operation(summary = "Exportar reporte de correos procesados a Excel",
+            description = "Filtro opcional por rango de 'Fecha recibido' (ambos extremos inclusive). "
+                    + "Si el correo no tiene fecha de recepción se usa su 'Fecha Gestión' (created_at).")
+    public ResponseEntity<byte[]> exportExcel(
+            @Parameter(description = "Desde (yyyy-MM-dd), inclusive")
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate from,
+            @Parameter(description = "Hasta (yyyy-MM-dd), inclusive")
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate to) throws Exception {
+        if (from != null && to != null && from.isAfter(to)) {
+            throw new BusinessException("La fecha 'desde' no puede ser posterior a la fecha 'hasta'");
+        }
+        LocalDateTime fromTs = from != null ? from.atStartOfDay() : LocalDateTime.of(1970, 1, 1, 0, 0);
+        LocalDateTime toTs   = to   != null ? to.plusDays(1).atStartOfDay() : LocalDateTime.of(9999, 1, 1, 0, 0);
+        List<Email> emails = emailRepository.findForReport(fromTs, toTs);
+        auditService.record(AuditAction.EMAIL_REPORT_EXPORTED, "REPORT", null,
+                AuditService.details("archivo", reportFilename(from, to), "desde", from, "hasta", to,
+                        "correos", emails.size()));
 
         try (XSSFWorkbook wb = new XSSFWorkbook()) {
             Sheet sheet = wb.createSheet("Reporte Correos");
@@ -121,25 +148,25 @@ public class EmailController {
             Row groupRow = sheet.createRow(0);
             groupRow.setHeightInPoints(16);
 
-            mergedHeader(sheet, groupRow, groupStyle,  "GENERAL",            0,  8);
-            mergedHeader(sheet, groupRow, classifStyle,"CLASIFICACIÓN",       9, 11);
-            mergedHeader(sheet, groupRow, extractStyle,"EXTRACCIÓN",         12, 13);
-            mergedHeader(sheet, groupRow, inventoryStyle,"INVENTARIO",       14, 16);
-            mergedHeader(sheet, groupRow, resultStyle, "RESULTADO PIPELINE", 17, 21);
+            mergedHeader(sheet, groupRow, groupStyle,  "GENERAL",            0,  9);
+            mergedHeader(sheet, groupRow, classifStyle,"CLASIFICACIÓN",      10, 12);
+            mergedHeader(sheet, groupRow, extractStyle,"EXTRACCIÓN",         13, 14);
+            mergedHeader(sheet, groupRow, inventoryStyle,"INVENTARIO",       15, 17);
+            mergedHeader(sheet, groupRow, resultStyle, "RESULTADO PIPELINE", 18, 22);
 
             // ── Fila 1: Cabeceras de columna ──────────────────────────────
             String[] headers = {
-                // GENERAL (0-8)
-                "N°", "Correo", "Asunto", "Fecha recibido",
+                // GENERAL (0-9)
+                "N°", "Correo", "Asunto", "Fecha recibido", "Fecha Gestión",
                 "Spam", "Confianza clasif.", "Extracción %",
                 "Cant. productos", "Tiempo pipeline (IA)",
-                // CLASIFICACIÓN (9-11)
+                // CLASIFICACIÓN (10-12)
                 "Estado clasif.", "Tiene adjunto", "Tipo adjunto",
-                // EXTRACCIÓN (12-13)
+                // EXTRACCIÓN (13-14)
                 "Campos extraídos (N/4)", "Email origen",
-                // INVENTARIO (14-16)
+                // INVENTARIO (15-17)
                 "Ítems encontrados", "Ítems no encontrados", "% Ítems encontrados",
-                // RESULTADO (17-21)
+                // RESULTADO (18-22)
                 "Estado RFQ", "Cotización enviada",
                 "Valor total (S/)", "Prob. conversión (%)", "Tiempo revisión operador"
             };
@@ -170,37 +197,40 @@ public class EmailController {
                 setCell(row, 2, truncate(email.getSubject(), 60), base);
                 setCell(row, 3, email.getReceivedAt() != null
                         ? email.getReceivedAt().format(DATE_FMT) : "-", base);
-                setCell(row, 4, email.getStatus() == EmailStatus.SPAM ? "Sí" : "No", base);
-                setCell(row, 5, email.getSpamConfidence() != null
+                // Fecha Gestión = cuándo el sistema registró/procesó el correo (emails.created_at)
+                setCell(row, 4, email.getCreatedAt() != null
+                        ? email.getCreatedAt().format(DATE_FMT) : "-", base);
+                setCell(row, 5, email.getStatus() == EmailStatus.SPAM ? "Sí" : "No", base);
+                setCell(row, 6, email.getSpamConfidence() != null
                         ? String.format("%.1f%%", email.getSpamConfidence() * 100) : "-", base);
 
                 LocalDateTime pipelineEnd = null;
                 if (rfqOpt.isPresent()) {
                     Rfq rfq = rfqOpt.get();
-                    setCell(row, 6, rfq.getExtractionConfidence() != null
+                    setCell(row, 7, rfq.getExtractionConfidence() != null
                             ? String.format("%.1f%%", rfq.getExtractionConfidence() * 100) : "-", base);
-                    setCell(row, 7, rfq.getItems() != null ? rfq.getItems().size() : 0, numSt);
+                    setCell(row, 8, rfq.getItems() != null ? rfq.getItems().size() : 0, numSt);
                     pipelineEnd = rfq.getCreatedAt();
                 } else {
-                    setCell(row, 6, "-", base);
                     setCell(row, 7, "-", base);
+                    setCell(row, 8, "-", base);
                     pipelineEnd = email.getProcessedAt();
                 }
-                setCell(row, 8, formatDuration(email.getCreatedAt(), pipelineEnd), base);
+                setCell(row, 9, formatDuration(email.getCreatedAt(), pipelineEnd), base);
 
                 // ── CLASIFICACIÓN ─────────────────────────────────────────
-                setCell(row, 9, statusLabel(email.getStatus()), base);
-                setCell(row, 10, Boolean.TRUE.equals(email.getHasAttachments()) ? "Sí" : "No", base);
-                setCell(row, 11, attachmentType(email.getAttachmentsJson()), base);
+                setCell(row, 10, statusLabel(email.getStatus()), base);
+                setCell(row, 11, Boolean.TRUE.equals(email.getHasAttachments()) ? "Sí" : "No", base);
+                setCell(row, 12, attachmentType(email.getAttachmentsJson()), base);
 
                 // ── EXTRACCIÓN ────────────────────────────────────────────
                 if (rfqOpt.isPresent()) {
                     Rfq rfq = rfqOpt.get();
-                    setCell(row, 12, countExtractedFields(rfq) + "/4", base);
-                    setCell(row, 13, emailOrigen(rfq, email), base);
+                    setCell(row, 13, countExtractedFields(rfq) + "/4", base);
+                    setCell(row, 14, emailOrigen(rfq, email), base);
                 } else {
-                    setCell(row, 12, "-", base);
                     setCell(row, 13, "-", base);
+                    setCell(row, 14, "-", base);
                 }
 
                 // ── INVENTARIO ────────────────────────────────────────────
@@ -214,36 +244,36 @@ public class EmailController {
                             .count();
                     int total     = q.getItems().size();
                     double pct    = total > 0 ? (found * 100.0 / total) : 0.0;
-                    setCell(row, 14, (int) found, numSt);
-                    setCell(row, 15, (int) notFound, numSt);
-                    setCell(row, 16, String.format("%.1f%%", pct), base);
+                    setCell(row, 15, (int) found, numSt);
+                    setCell(row, 16, (int) notFound, numSt);
+                    setCell(row, 17, String.format("%.1f%%", pct), base);
                 } else {
-                    setCell(row, 14, "-", base);
                     setCell(row, 15, "-", base);
                     setCell(row, 16, "-", base);
+                    setCell(row, 17, "-", base);
                 }
 
                 // ── RESULTADO ─────────────────────────────────────────────
                 if (rfqOpt.isPresent()) {
-                    setCell(row, 17, rfqStatusLabel(rfqOpt.get()), base);
+                    setCell(row, 18, rfqStatusLabel(rfqOpt.get()), base);
                 } else {
-                    setCell(row, 17, "-", base);
+                    setCell(row, 18, "-", base);
                 }
                 if (quotOpt.isPresent()) {
                     Quotation q = quotOpt.get();
-                    setCell(row, 18, q.getStatus() == QuotationStatus.SENT ? "Sí" : "No", base);
-                    setCell(row, 19, q.getTotal() != null
+                    setCell(row, 19, q.getStatus() == QuotationStatus.SENT ? "Sí" : "No", base);
+                    setCell(row, 20, q.getTotal() != null
                             ? String.format("%.2f", q.getTotal()) : "-", base);
-                    setCell(row, 20, q.getConversionProbability() != null
+                    setCell(row, 21, q.getConversionProbability() != null
                             ? String.format("%.0f%%", q.getConversionProbability() * 100) : "-", base);
                     // Tiempo revisión = desde que el RFQ quedó listo hasta que el operador aprobó
                     LocalDateTime reviewStart = rfqOpt.map(Rfq::getCreatedAt).orElse(null);
-                    setCell(row, 21, formatDuration(reviewStart, q.getCreatedAt()), base);
+                    setCell(row, 22, formatDuration(reviewStart, q.getCreatedAt()), base);
                 } else {
-                    setCell(row, 18, "-", base);
                     setCell(row, 19, "-", base);
                     setCell(row, 20, "-", base);
                     setCell(row, 21, "-", base);
+                    setCell(row, 22, "-", base);
                 }
 
                 rowNum++;
@@ -251,7 +281,7 @@ public class EmailController {
 
             // ── Anchos de columna ─────────────────────────────────────────
             int[] widths = {
-                6, 36, 52, 20, 8, 18, 15, 16, 22,   // GENERAL
+                6, 36, 52, 20, 20, 8, 18, 15, 16, 22,   // GENERAL
                 18, 14, 14,                            // CLASIFICACIÓN
                 22, 26,                                // EXTRACCIÓN
                 18, 20, 20,                            // INVENTARIO
@@ -271,9 +301,14 @@ public class EmailController {
                     .contentType(MediaType.parseMediaType(
                             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
                     .header(HttpHeaders.CONTENT_DISPOSITION,
-                            "attachment; filename=\"reporte-correos.xlsx\"")
+                            "attachment; filename=\"" + reportFilename(from, to) + "\"")
                     .body(baos.toByteArray());
         }
+    }
+
+    private String reportFilename(LocalDate from, LocalDate to) {
+        if (from == null && to == null) return "reporte-correos.xlsx";
+        return "reporte-correos_" + (from != null ? from : "inicio") + "_a_" + (to != null ? to : "hoy") + ".xlsx";
     }
 
     // ── Style helpers ─────────────────────────────────────────────────────────
