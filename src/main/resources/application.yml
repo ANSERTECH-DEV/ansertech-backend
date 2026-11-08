@@ -13,6 +13,11 @@ spring:
     properties:
       hibernate:
         dialect: org.hibernate.dialect.PostgreSQLDialect
+  servlet:
+    multipart:
+      # Carga masiva de inventario (POST /api/inventory/import)
+      max-file-size: 10MB
+      max-request-size: 10MB
   jackson:
     serialization:
       write-dates-as-timestamps: false
@@ -58,7 +63,7 @@ microsoft:
 
   polling:
     enabled: false
-    fixed-delay-ms: 10000
+    fixed-delay-ms: 20000
     initial-delay-ms: 10000
     max-messages-per-poll: 5
 
@@ -72,7 +77,7 @@ storage:
 
 # ===== CORS =====
 cors:
-  allowed-origins: ${CORS_ORIGINS:http://localhost:4200}
+  allowed-origins: ${CORS_ORIGINS:http://localhost:4200,https://ansertechweb.netlify.app}
 
 # ===== Springdoc / Swagger =====
 springdoc:
@@ -83,6 +88,9 @@ springdoc:
     tags-sorter: alpha
 
 logging:
+  # Además de la consola de IntelliJ, el log queda en logs/ansertech-backend.log (ignorado por git)
+  file:
+    name: ${LOG_FILE:logs/ansertech-backend.log}
   level:
     com.ansertech: ${LOG_LEVEL:INFO}
     org.springframework.security: WARN

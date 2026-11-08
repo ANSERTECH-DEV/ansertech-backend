@@ -1,5 +1,8 @@
 package com.ansertech.controller;
 
+import com.ansertech.domain.enums.AuditAction;
+import com.ansertech.service.audit.AuditService;
+
 import com.ansertech.domain.enums.QuotationStatus;
 import com.ansertech.dto.response.ApiResponse;
 import com.ansertech.dto.response.QuotationResponse;
@@ -24,6 +27,7 @@ public class QuotationController {
 
     private final QuotationService quotationService;
     private final QuotationPdfService pdfService;
+    private final AuditService auditService;
 
     @GetMapping
     @Operation(summary = "Listar cotizaciones con filtro por estado")
@@ -50,6 +54,8 @@ public class QuotationController {
     public ResponseEntity<byte[]> downloadPdf(@PathVariable Long id) {
         String pdfUrl = quotationService.getPdfPath(id);
         byte[] pdfBytes = pdfService.downloadPdf(pdfUrl);
+        auditService.record(AuditAction.QUOTATION_PDF_DOWNLOADED, "QUOTATION", id,
+                AuditService.details("bytes", pdfBytes != null ? pdfBytes.length : 0));
         String filename = "COT-" + id + ".pdf";
         return ResponseEntity.ok()
                 .contentType(MediaType.APPLICATION_PDF)

@@ -1,6 +1,7 @@
 package com.ansertech.service.quotation;
 
 import com.ansertech.domain.entity.*;
+import com.ansertech.domain.enums.AuditAction;
 import com.ansertech.domain.enums.AvailabilityStatus;
 import com.ansertech.domain.enums.QuotationStatus;
 import com.ansertech.domain.enums.StockCheckStatus;
@@ -11,6 +12,7 @@ import com.ansertech.repository.ProductRepository;
 import com.ansertech.repository.QuotationRepository;
 import com.ansertech.repository.RfqStockCheckResultRepository;
 import com.ansertech.service.ai.GeminiService;
+import com.ansertech.service.audit.AuditService;
 import com.ansertech.service.email.EmailSenderService;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -24,6 +26,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.time.Clock;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -46,6 +49,8 @@ public class QuotationService {
     private final QuotationPdfService pdfService;
     private final EmailSenderService emailSenderService;
     private final ObjectMapper objectMapper;
+    private final Clock clock;
+    private final AuditService auditService;
 
     public Quotation generateFromRfq(Rfq rfq) {
         try {
@@ -61,12 +66,19 @@ public class QuotationService {
 
             pdfService.generateAndStore(quotation);
             log.info("Cotización {} generada para RFQ {}", quotation.getQuotationNumber(), rfq.getId());
+            auditService.record(AuditAction.QUOTATION_GENERATED, "QUOTATION", quotation.getId(),
+                    AuditService.details("cotizacion", quotation.getQuotationNumber(), "rfqId", rfq.getId(),
+                            "items", quotation.getItems() != null ? quotation.getItems().size() : 0,
+                            "subtotal", quotation.getSubtotal(), "igv", quotation.getIgv(),
+                            "total", quotation.getTotal(), "pdf", quotation.getPdfPath() != null));
 
             sendEmailToClient(quotation, rfq);
 
             return quotation;
         } catch (Exception e) {
             log.error("Error generando cotización para RFQ {}: {}", rfq.getId(), e.getMessage());
+            auditService.record(AuditAction.QUOTATION_GENERATION_FAILED, "RFQ", rfq.getId(),
+                    AuditService.details("error", e.getMessage()));
             return buildMinimalQuotation(rfq);
         }
     }
@@ -129,26 +141,39 @@ public class QuotationService {
         if (clientEmail == null || clientEmail.isBlank()) {
             log.warn("RFQ {} sin correo de cliente — cotización {} no enviada por email",
                     rfq.getId(), quotation.getQuotationNumber());
+            auditService.record(AuditAction.QUOTATION_SEND_FAILED, "QUOTATION", quotation.getId(),
+                    AuditService.details("cotizacion", quotation.getQuotationNumber(),
+                            "error", "La solicitud no tiene correo de cliente"));
             return;
         }
         if (quotation.getPdfPath() == null) {
             log.warn("Cotización {} sin PDF — no se puede enviar email", quotation.getQuotationNumber());
+            auditService.record(AuditAction.QUOTATION_SEND_FAILED, "QUOTATION", quotation.getId(),
+                    AuditService.details("cotizacion", quotation.getQuotationNumber(),
+                            "error", "La cotización no tiene PDF"));
             return;
         }
+        List<String> ccAddresses = extractCcAddresses(rfq);
         try {
             byte[] pdfBytes = pdfService.downloadPdf(quotation.getPdfPath());
             emailSenderService.sendQuotationEmail(
                     clientEmail, rfq.getClientName(), quotation.getQuotationNumber(),
                     quotation.getSubtotal(), quotation.getIgv(), quotation.getTotal(),
-                    pdfBytes, extractCcAddresses(rfq)
+                    pdfBytes, ccAddresses
             );
             quotation.setStatus(QuotationStatus.SENT);
             quotation.setSentAt(LocalDateTime.now());
             quotationRepository.save(quotation);
             log.info("Email enviado a {} — cotización {}", clientEmail, quotation.getQuotationNumber());
+            auditService.record(AuditAction.QUOTATION_SENT, "QUOTATION", quotation.getId(),
+                    AuditService.details("cotizacion", quotation.getQuotationNumber(),
+                            "para", clientEmail, "cc", ccAddresses));
         } catch (Exception e) {
             log.error("Error enviando email para cotización {} — queda en DRAFT: {}",
                     quotation.getQuotationNumber(), e.getMessage());
+            auditService.record(AuditAction.QUOTATION_SEND_FAILED, "QUOTATION", quotation.getId(),
+                    AuditService.details("cotizacion", quotation.getQuotationNumber(),
+                            "para", clientEmail, "error", e.getMessage()));
         }
     }
 
@@ -170,7 +195,9 @@ public class QuotationService {
             log.info("Reenvío manual de cotización {} a {}", q.getQuotationNumber(),
                     q.getRfq() != null ? q.getRfq().getClientEmail() : "desconocido");
         }
+        boolean emailed = false;
         if (q.getRfq() != null && q.getRfq().getClientEmail() != null && q.getPdfPath() != null) {
+            emailed = true;
             byte[] pdfBytes = pdfService.downloadPdf(q.getPdfPath());
             emailSenderService.sendQuotationEmail(
                     q.getRfq().getClientEmail(), q.getRfq().getClientName(),
@@ -181,9 +208,15 @@ public class QuotationService {
         } else {
             log.warn("Cotización {} sin correo de cliente o PDF", q.getQuotationNumber());
         }
+        QuotationStatus previous = q.getStatus();
         q.setStatus(QuotationStatus.SENT);
         q.setSentAt(LocalDateTime.now());
-        return toResponse(quotationRepository.save(q));
+        Quotation saved = quotationRepository.save(q);
+        auditService.record(AuditAction.QUOTATION_RESENT, "QUOTATION", q.getId(),
+                AuditService.details("cotizacion", q.getQuotationNumber(),
+                        "para", q.getRfq() != null ? q.getRfq().getClientEmail() : null,
+                        "correoEnviado", emailed, "estadoAnterior", previous != null ? previous.name() : null));
+        return toResponse(saved);
     }
 
     public String getPdfPath(Long id) {
@@ -206,7 +239,7 @@ public class QuotationService {
                 .quotationNumber(number)
                 .status(QuotationStatus.DRAFT)
                 .currency("PEN")
-                .validUntil(LocalDate.now().plusDays(15))
+                .validUntil(LocalDate.now(clock).plusDays(15))
                 .conversionProbability(ai.path("conversion_probability").asDouble(0.5))
                 .aiSummary(ai.path("ai_summary").asText(""))
                 .items(items)
@@ -253,7 +286,7 @@ public class QuotationService {
         Quotation q = Quotation.builder()
                 .rfq(rfq).quotationNumber(generateQuotationNumber())
                 .status(QuotationStatus.DRAFT).currency("PEN")
-                .validUntil(LocalDate.now().plusDays(15))
+                .validUntil(LocalDate.now(clock).plusDays(15))
                 .subtotal(BigDecimal.ZERO).igv(BigDecimal.ZERO).total(BigDecimal.ZERO)
                 .aiSummary("Generación automática fallida — completar manualmente")
                 .items(new ArrayList<>()).build();
@@ -263,7 +296,7 @@ public class QuotationService {
 
 
     private String generateQuotationNumber() {
-        int year = LocalDate.now().getYear();
+        int year = LocalDate.now(clock).getYear();
         Integer maxSeq = quotationRepository.findMaxSequenceForYear(year);
         int next = (maxSeq != null ? maxSeq : 0) + 1;
         return String.format("COT-%d-%04d", year, next);

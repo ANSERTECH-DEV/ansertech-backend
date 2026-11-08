@@ -1,5 +1,8 @@
 package com.ansertech.service.rfq;
 
+import com.ansertech.domain.enums.AuditAction;
+import com.ansertech.service.audit.AuditService;
+
 import com.ansertech.domain.entity.Rfq;
 import com.ansertech.domain.entity.RfqStockCheckResult;
 import com.ansertech.domain.enums.RfqStatus;
@@ -29,6 +32,7 @@ public class RfqStockCheckQueueService {
     private final GeminiService geminiService;
     private final RfqStockCheckResultRepository stockCheckResultRepository;
     private final ObjectMapper objectMapper;
+    private final AuditService auditService;
 
     /**
      * Envía el RFQ al executor de hilo único para stock-check automático.
@@ -67,6 +71,11 @@ public class RfqStockCheckQueueService {
             rfqRepository.save(rfq);
 
             log.info("[StockCheckQueue] RFQ {} completado — {} ítems, estado → PENDING_REVIEW", rfqId, items.size());
+            auditService.recordSystem(AuditAction.RFQ_STOCK_CHECK_COMPLETED, "RFQ", rfqId,
+                    AuditService.details("items", items.size(),
+                            "encontrados", items.stream().filter(StockCheckItemResponse::isMatched).count(),
+                            "conStockSuficiente", items.stream().filter(StockCheckItemResponse::isStockSufficient).count(),
+                            "estadoNuevo", RfqStatus.PENDING_REVIEW.name()));
 
         } catch (Exception e) {
             log.error("[StockCheckQueue] Error en stock-check de RFQ {}: {}", rfqId, e.getMessage(), e);
@@ -75,6 +84,8 @@ public class RfqStockCheckQueueService {
             result.setProcessedAt(LocalDateTime.now());
             result.setErrorMessage(e.getMessage());
             stockCheckResultRepository.save(result);
+            auditService.recordSystem(AuditAction.RFQ_STOCK_CHECK_FAILED, "RFQ", rfqId,
+                    AuditService.details("error", e.getMessage()));
 
             // RFQ permanece en PROCESSING para que el operador pueda reintentar
         }

@@ -1,5 +1,8 @@
 package com.ansertech.controller;
 
+import com.ansertech.domain.enums.AuditAction;
+import com.ansertech.service.audit.AuditService;
+
 import com.ansertech.domain.entity.Rfq;
 import com.ansertech.domain.entity.RfqStockCheckResult;
 import com.ansertech.domain.enums.RfqStatus;
@@ -8,6 +11,7 @@ import com.ansertech.dto.response.ApiResponse;
 import com.ansertech.dto.response.RfqResponse;
 import com.ansertech.dto.response.StockCheckItemResponse;
 import com.ansertech.dto.response.StockCheckResultResponse;
+import com.ansertech.exception.BusinessException;
 import com.ansertech.exception.ResourceNotFoundException;
 import com.ansertech.repository.RfqRepository;
 import com.ansertech.repository.RfqStockCheckResultRepository;
@@ -37,6 +41,7 @@ public class RfqController {
     private final RfqStockCheckResultRepository stockCheckResultRepository;
     private final QuotationService quotationService;
     private final ObjectMapper objectMapper;
+    private final AuditService auditService;
 
     @GetMapping
     @Operation(summary = "Listar RFQs con filtro por estado")
@@ -64,8 +69,13 @@ public class RfqController {
     public ResponseEntity<ApiResponse<RfqResponse>> update(
             @PathVariable Long id, @RequestBody Map<String, String> body) {
         Rfq rfq = findOrThrow(id);
+        String previousNotes = rfq.getNotes();
         if (body.containsKey("notes")) rfq.setNotes(body.get("notes"));
         rfqRepository.save(rfq);
+        if (body.containsKey("notes")) {
+            auditService.record(AuditAction.RFQ_UPDATED, "RFQ", id,
+                    AuditService.details("campo", "notes", "antes", previousNotes, "despues", rfq.getNotes()));
+        }
         return ResponseEntity.ok(ApiResponse.ok(toResponse(rfq)));
     }
 
@@ -73,6 +83,7 @@ public class RfqController {
     @Operation(summary = "Confirmar RFQ, generar cotización, PDF y enviar email al cliente")
     public ResponseEntity<ApiResponse<Long>> confirm(@PathVariable Long id) {
         Rfq rfq = findOrThrow(id);
+        requireTransition(rfq, RfqStatus.QUOTING);
         rfq.setStatus(RfqStatus.QUOTING);
         rfqRepository.save(rfq);
 
@@ -80,6 +91,12 @@ public class RfqController {
 
         rfq.setStatus(RfqStatus.QUOTED);
         rfqRepository.save(rfq);
+        auditService.record(AuditAction.RFQ_APPROVED, "RFQ", id,
+                AuditService.details("cliente", clientLabel(rfq),
+                        "cotizacionId", quotation.getId(),
+                        "cotizacion", quotation.getQuotationNumber(),
+                        "estadoCotizacion", quotation.getStatus() != null ? quotation.getStatus().name() : null,
+                        "total", quotation.getTotal()));
 
         return ResponseEntity.ok(ApiResponse.ok(quotation.getId(),
                 "Cotización generada y enviada: " + quotation.getQuotationNumber()));
@@ -136,9 +153,24 @@ public class RfqController {
     @Operation(summary = "Rechazar RFQ sin generar cotización")
     public ResponseEntity<ApiResponse<String>> reject(@PathVariable Long id) {
         Rfq rfq = findOrThrow(id);
+        requireTransition(rfq, RfqStatus.REJECTED);
+        RfqStatus previous = rfq.getStatus();
         rfq.setStatus(RfqStatus.REJECTED);
         rfqRepository.save(rfq);
+        auditService.record(AuditAction.RFQ_REJECTED, "RFQ", id,
+                AuditService.details("cliente", clientLabel(rfq), "estadoAnterior", previous.name()));
         return ResponseEntity.ok(ApiResponse.ok("REJECTED", "RFQ #" + id + " rechazado"));
+    }
+
+    private void requireTransition(Rfq rfq, RfqStatus target) {
+        if (!rfq.getStatus().canTransitionTo(target)) {
+            throw new BusinessException(
+                    "Transición de estado inválida: " + rfq.getStatus() + " → " + target);
+        }
+    }
+
+    private static String clientLabel(Rfq rfq) {
+        return rfq.getClientCompany() != null ? rfq.getClientCompany() : rfq.getClientEmail();
     }
 
     private Rfq findOrThrow(Long id) {

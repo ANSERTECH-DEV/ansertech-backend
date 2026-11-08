@@ -1,0 +1,10 @@
+target/
+logs/
+storage/
+.git/
+.idea/
+*.iml
+.DS_Store
+.env
+gcp-credentials.*
+*credentials*.json
