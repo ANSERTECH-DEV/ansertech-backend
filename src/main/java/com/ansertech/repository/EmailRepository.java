@@ -26,7 +26,7 @@ public interface EmailRepository extends JpaRepository<Email, Long> {
     List<Email> findTop10ByOrderByCreatedAtDesc(Pageable pageable);
 
     /** Reporte Excel: correos cuya fecha de recepción (o created_at si no la tiene) cae en [from, toExclusive). */
-    @Query("SELECT e FROM Email e WHERE COALESCE(e.receivedAt, e.createdAt) >= :from "
-            + "AND COALESCE(e.receivedAt, e.createdAt) < :toExclusive ORDER BY e.createdAt ASC")
+    @Query("SELECT e FROM Email e WHERE COALESCE(e.createdAt, e.processedAt) >= :from "
+            + "AND COALESCE(e.createdAt, e.processedAt) < :toExclusive ORDER BY e.createdAt ASC")
     List<Email> findForReport(@Param("from") LocalDateTime from, @Param("toExclusive") LocalDateTime toExclusive);
 }

@@ -39,5 +39,11 @@ public enum AuditAction {
     PRODUCT_UPDATED,
     PRODUCT_STOCK_UPDATED,
     INVENTORY_IMPORTED,
-    INVENTORY_EXPORTED
+    INVENTORY_EXPORTED,
+
+    // ── Microsoft Graph y administración ─────────────────────────────────
+    GRAPH_CONNECT_REQUESTED,
+    GRAPH_CONNECTED,
+    GRAPH_CONNECT_FAILED,
+    SERVER_LOGS_VIEWED
 }
