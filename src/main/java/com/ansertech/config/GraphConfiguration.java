@@ -1,5 +1,6 @@
 package com.ansertech.config;
 
+import com.ansertech.service.graph.GraphConnectionState;
 import com.azure.identity.DeviceCodeCredential;
 import com.azure.identity.DeviceCodeCredentialBuilder;
 import com.azure.identity.TokenCachePersistenceOptions;
@@ -13,32 +14,54 @@ import org.springframework.context.annotation.Configuration;
 @Configuration
 public class GraphConfiguration {
 
+    /** Prefijo fijo de la línea de log; {@code LogReaderService} lo busca con una regex. */
+    public static final String DEVICE_CODE_LOG_TAG = "[MICROSOFT_DEVICE_CODE]";
+
+    /** Permisos delegados que usa el backend: leer/marcar correos y enviar cotizaciones. */
+    public static final String[] GRAPH_SCOPES = {
+            "https://graph.microsoft.com/Mail.ReadWrite",
+            "https://graph.microsoft.com/Mail.Send"
+    };
+
     @Value("${microsoft.graph.client-id}")
     private String clientId;
 
-    private final String tenantId = "consumers";
+    @Value("${microsoft.graph.tenant-id:consumers}")
+    private String tenantId;
+
+    /**
+     * En Linux (contenedor de Cloud Run) la caché cifrada necesita libsecret, que la imagen alpine no trae.
+     * Con {@code true} la caché se guarda sin cifrar en el disco del contenedor (que es efímero).
+     */
+    @Value("${microsoft.graph.allow-unencrypted-cache:false}")
+    private boolean allowUnencryptedCache;
 
     @Bean
-    public GraphServiceClient graphServiceClient() {
+    public DeviceCodeCredential deviceCodeCredential(GraphConnectionState connectionState) {
         TokenCachePersistenceOptions tokenCacheOptions = new TokenCachePersistenceOptions()
-                .setName("ansertech-graph-cache");
+                .setName("ansertech-graph-cache")
+                .setUnencryptedStorageAllowed(allowUnencryptedCache);
 
-        DeviceCodeCredential credential = new DeviceCodeCredentialBuilder()
+        return new DeviceCodeCredentialBuilder()
                 .clientId(clientId)
                 .tenantId(tenantId)
                 .tokenCachePersistenceOptions(tokenCacheOptions)
                 .challengeConsumer(challenge -> {
-                    log.warn("\n=======================================================\n" +
-                             "REQUIRES AUTHENTICATION:\n" +
-                             challenge.getMessage() + "\n" +
-                             "=======================================================\n");
+                    // azure-identity solo lo imprime en System.out; aquí va al log (consola + archivo)
+                    // y al estado en memoria que lee el portal.
+                    connectionState.onChallenge(challenge);
+                    log.warn("{} URL: {} | CODE: {} | EXPIRA: {} | MSG: {}",
+                            DEVICE_CODE_LOG_TAG,
+                            challenge.getVerificationUrl(),
+                            challenge.getUserCode(),
+                            challenge.getExpiresOn(),
+                            challenge.getMessage());
                 })
                 .build();
+    }
 
-        String[] scopes = new String[]{
-                "https://graph.microsoft.com/Mail.ReadWrite",
-                "https://graph.microsoft.com/Mail.Send"
-        };
-        return new GraphServiceClient(credential, scopes);
+    @Bean
+    public GraphServiceClient graphServiceClient(DeviceCodeCredential credential) {
+        return new GraphServiceClient(credential, GRAPH_SCOPES);
     }
 }

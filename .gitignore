@@ -10,7 +10,7 @@ out/
 
 # Logs
 *.log
-logs/
+/logs/
 
 # =========================
 # IDEs

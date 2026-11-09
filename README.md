@@ -56,7 +56,7 @@ mvn spring-boot:run
 
 **Primera vez en una máquina:** Microsoft Graph usa Device Code Flow con cuenta personal. La consola muestra un código para ingresar en https://microsoft.com/devicelogin; el token queda cacheado (Keychain en macOS, `ansertech-graph-cache`) por unos 90 días.
 
-**Logs:** además de la consola, el backend escribe `logs/ansertech-backend.log` (cambia la ruta con `LOG_FILE`; la carpeta está en `.gitignore`). Si una cotización no llega al cliente, busca ahí `Error generando/subiendo PDF`, `Error enviando email` o `REQUIRES AUTHENTICATION`.
+**Logs:** además de la consola, el backend escribe `logs/ansertech-backend.log` (cambia la ruta con `LOG_FILE`; la carpeta está en `.gitignore` como `/logs/`, solo la de la raíz: hasta el 2026-11-08 era `logs/` y también ignoraba el paquete `service/logs/`, lo que habría dejado `LogReaderService` fuera del commit). Si una cotización no llega al cliente, busca ahí `Error generando/subiendo PDF`, `Error enviando email` o `REQUIRES AUTHENTICATION`.
 
 **Polling de correo (desde 2026-11-06 viene apagado):** `application.yml` trae `microsoft.polling.enabled: false`, así que el backend no lee Outlook por su cuenta. Para leer los correos se usa `POST /api/emails/trigger-polling` (ADMIN), que llama a `EmailPipelineScheduler.runPipelineManually()`: corre aunque `enabled` sea `false`, procesa hasta 5 correos no leídos (`max-messages-per-poll`) y no responde hasta terminar (las llamadas a Gemini van dentro del request, así que puede demorar varios segundos por correo). La respuesta dice "Pipeline iniciado", pero en realidad ya terminó; el resultado se ve en el log. El frontend tiene `EmailService.triggerPolling()`, pero ningún botón lo usa todavía. Si se reactiva el polling automático, revisa antes `fixed-delay-ms`: ahora está en `20000` (cada 20 s), no en los 4 min de antes.
 
@@ -75,6 +75,26 @@ docker run -p 8080:8080 \
 ```
 
 `.dockerignore` deja fuera `target/`, `logs/`, `storage/`, `.env`, `.git/`, `.idea/` y cualquier `*credentials*.json`, así que **las credenciales de GCP no van dentro de la imagen**: hay que montarlas o inyectarlas al ejecutar. El token de Microsoft Graph tampoco viaja: en un contenedor nuevo, el Device Code Flow pide de nuevo el código en el log.
+
+### Cloud Run (desde 2026-11-08)
+
+El backend está publicado en `https://ansertech-backend-183235697489.southamerica-east1.run.app` (región `southamerica-east1`) y el frontend de Netlify lo usa. Comprobado el 2026-11-08: responde 403 sin token y el preflight CORS desde `https://ansertechweb.netlify.app` da 200.
+
+> ⚠️ **Al 2026-11-08 (22:37), Cloud Run corre una versión anterior a la vinculación de Outlook**: `/api/auth/graph/**` y `/api/admin/logs` todavía no existen allí (responden 500, ver Problemas conocidos). Cloud Run no se actualiza con el push: hay que construir la imagen con el `Dockerfile` y desplegarla. El servicio no está en el proyecto de GCP de `piero.ticona.python@gmail.com`; lo despliega quien tenga acceso.
+
+**Probar en local con el front:** el front llama a la URL de `apiUrl` en `environment.ts`, que hoy es Cloud Run. Para usar el backend local, activa la línea de `http://localhost:8080/api`, cierra sesión y vuelve a entrar (el JWT de Cloud Run no sirve en local: cada backend firma con su propio `JWT_SECRET`). Para confirmar a qué backend llegan las peticiones, revisa si tu `Login exitoso: …` aparece en `logs/ansertech-backend.log`. Las variables de entorno de la tabla de arriba se configuran en el servicio de Cloud Run, no en el repo. Si el servicio arranca en frío, la primera petición puede tardar varios segundos. Graph sigue con Device Code Flow. Desde el 2026-11-08 el código se muestra en el portal (Dashboard → "Conexión con Outlook", solo ADMIN), además de en el log.
+
+**Vincular Outlook (Device Code Flow):**
+- `POST /api/auth/graph/connect` (ADMIN) pide el token en un hilo aparte y responde en ≤5 s. Si la caché de tokens sirve, el estado queda `CONNECTED`. Si no, Microsoft entrega un código y el estado queda `PENDING` con `url`, `code` y `expiresOn` (unos 15 min).
+- `GET /api/auth/graph/device-code` (ADMIN) devuelve ese estado. El código vive en memoria (`GraphConnectionState`). Si no está, se busca en el log la última línea `[MICROSOFT_DEVICE_CODE]` vigente (`source: LOG`).
+- `GET /api/admin/logs?lines=50` (ADMIN, `text/plain`, máx. 500) lee el final del log sin cargarlo entero. Si el archivo no existe, responde 200 con un aviso.
+- Las dos rutas `/api/auth/graph/**` exigen ADMIN aunque `/api/auth/**` sea público: la regla va antes en `SecurityConfig`. No deben ser públicas: quien vea el código puede vincular **su** cuenta de Microsoft y el backend leería y enviaría correos con ella.
+- Variables: `GRAPH_CONNECT_ON_STARTUP` (por defecto `false`; con `true` pide el token al arrancar) y `GRAPH_ALLOW_UNENCRYPTED_CACHE` (el `Dockerfile` la pone en `true` porque alpine no trae libsecret; en macOS se usa el llavero igual). El `Dockerfile` también fija `LOG_FILE=/tmp/ansertech.log`.
+
+**Consideraciones de Cloud Run:**
+- `/tmp` y la caché de tokens están en el disco del contenedor, que vive en memoria y se borra cuando la instancia se apaga. Con `min-instances=0`, cada arranque en frío pierde el token y hay que vincular de nuevo.
+- Cada réplica tiene su propio log, su propio estado en memoria y su propia caché. Con varias instancias, el portal podría preguntar a una réplica distinta de la que generó el código, y el pipeline podría correr en una réplica sin token.
+- Recomendado: `--min-instances=1 --max-instances=1`. Para los logs históricos, usa Cloud Logging, que recibe la consola de todas las instancias.
 
 > `docker-compose.yml` no está operativo tal como está: el servicio `backend` depende de `postgres`, que está comentado, y todavía declara variables de Gmail.
 
@@ -101,30 +121,31 @@ mvn test
 open target/site/jacoco/index.html
 ```
 
-64 tests JUnit 5: unitarios (`QuotationService`, `EmailClassificationService`, `RfqStatus`, `InventoryImportService`, `InventoryTemplateService`, `Product`) e integración con PostgreSQL real vía Testcontainers (`RepositoryPersistenceTest`, `RfqLifecycleIntegrationTest`, `SecurityRbacIntegrationTest`, `InventoryImportIntegrationTest`). Vertex AI, Graph y Azure se mockean: ningún test hace llamadas reales. Sin Docker, los tests de Testcontainers se saltan solos (2026-09-29, sin Docker: 43 pasan y 21 se saltan). Resultados: [`../docs/informe_testing.md`](../docs/informe_testing.md).
+79 tests JUnit 5 (2026-11-08: 58 pasan y 21 se saltan sin Docker): unitarios (`QuotationService`, `EmailClassificationService`, `RfqStatus`, `InventoryImportService`, `InventoryTemplateService`, `Product`, `AuditService`, `DashboardService`, `LogReaderService`, `GraphConnectionState`) e integración con PostgreSQL real vía Testcontainers (`RepositoryPersistenceTest`, `RfqLifecycleIntegrationTest`, `SecurityRbacIntegrationTest`, `InventoryImportIntegrationTest`). Vertex AI, Graph y Azure se mockean: ningún test hace llamadas reales. Sin Docker, los tests de Testcontainers se saltan solos (2026-09-29, sin Docker: 43 pasan y 21 se saltan). Resultados: [`../docs/informe_testing.md`](../docs/informe_testing.md).
 
 ## Estructura
 
 ```
 com.ansertech/
 ├── config/        Security, CORS, Async, VertexAI, Graph, OpenAPI, Clock
-├── controller/    Auth, Rfq, Quotation, Inventory, Email, Dashboard
+├── controller/    Auth, Rfq, Quotation, Inventory, Email, Dashboard, GraphAuth, AdminLog
 ├── domain/        entity/ + enums/
 ├── dto/           request/ + response/
 ├── exception/     GlobalExceptionHandler + excepciones de negocio
 ├── repository/    Spring Data JPA
 ├── security/      filtro y proveedor JWT
-└── service/       ai/, auth/, email/, inventory/, quotation/, rfq/
+└── service/       ai/, audit/, auth/, dashboard/, email/, graph/, inventory/, logs/, quotation/, rfq/
 ```
 
 ## Problemas conocidos
 
-- **`POST /api/auth/register` es público y acepta `role: ADMIN`**: cualquiera puede crearse una cuenta de administrador. Corregir antes de desplegar.
+- **`POST /api/auth/register` es público y acepta `role: ADMIN`**: cualquiera puede crearse una cuenta de administrador. **Ya está desplegado en Cloud Run**, así que esto es urgente.
 - `confirm`, `reject` y `reclassify` no exigen rol.
 - `EmailController.reclassify` puede lanzar NPE si el body no trae `status`.
 - **RFQ pegados al apagar el backend:** si se apaga durante una aprobación, el RFQ queda en `QUOTING` sin salida, porque `canTransitionTo()` no permite volver a `PENDING_REVIEW`. Los RFQ que estaban en la cola de stock-check, que vive en memoria, quedan en `PROCESSING`. Al arrancar no se recupera nada: hay que corregirlos en pgAdmin (ver `proyecto_tesis_resumen.md` §5, problema #18). Evita detener el backend mientras se aprueba o procesa algo.
 - **Fallo silencioso al aprobar:** si falla el PDF o el correo, el error solo queda en el log, el RFQ pasa igual a `QUOTED` y, si falló el PDF, se guarda una segunda cotización vacía. Si el PDF da `UnknownHostException ...blob.core.windows.net`, la cuenta de Azure Storage no existe: revisa `AZURE_STORAGE_CONNECTION_STRING`.
-- `AuditLog` existe pero ningún servicio escribe en ella.
-- Graph atado a cuenta personal (Device Code Flow): falta migrar a Client Credentials con una cuenta Microsoft 365.
+- Auditoría (desde 2026-11-07): `AuditService` registra en `audit_logs` logins, registro de usuarios, aprobaciones/rechazos, cotizaciones, cambios de inventario, exportaciones y el pipeline automático (como `SISTEMA`). Todavía no hay endpoint ni pantalla para consultarla: se revisa en la BD.
+- Una ruta inexistente responde **500 "Error interno del servidor"** en vez de 404 (`GlobalExceptionHandler` no maneja `NoResourceFoundException`).
+- Graph atado a cuenta personal (Device Code Flow): falta migrar a Client Credentials con una cuenta Microsoft 365. Mientras tanto, la vinculación se hace desde el portal (ver Cloud Run).
 
 Lista completa y priorizada: [`../proyecto_tesis_resumen.md`](../proyecto_tesis_resumen.md) §5.

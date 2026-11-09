@@ -60,6 +60,10 @@ microsoft:
   graph:
     client-id: ${GRAPH_CLIENT_ID:}
     tenant-id: ${GRAPH_TENANT_ID:consumers}
+    # Con true, al arrancar se pide el token en segundo plano (si no hay caché, aparece el código en el portal y en el log)
+    connect-on-startup: ${GRAPH_CONNECT_ON_STARTUP:false}
+    # Linux sin libsecret (contenedor alpine): permite guardar la caché de tokens sin cifrar. En macOS se usa el llavero igual.
+    allow-unencrypted-cache: ${GRAPH_ALLOW_UNENCRYPTED_CACHE:false}
 
   polling:
     enabled: false
@@ -88,9 +92,11 @@ springdoc:
     tags-sorter: alpha
 
 logging:
-  # Además de la consola de IntelliJ, el log queda en logs/ansertech-backend.log (ignorado por git)
+  # Además de la consola de IntelliJ, el log queda en logs/ansertech-backend.log (ignorado por git).
+  # En Cloud Run el Dockerfile fija LOG_FILE=/tmp/ansertech.log. Lo lee GET /api/admin/logs.
   file:
     name: ${LOG_FILE:logs/ansertech-backend.log}
   level:
     com.ansertech: ${LOG_LEVEL:INFO}
     org.springframework.security: WARN
+    com.azure.identity: ${AZURE_IDENTITY_LOG_LEVEL:INFO}
