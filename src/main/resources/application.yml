@@ -64,6 +64,8 @@ microsoft:
     connect-on-startup: ${GRAPH_CONNECT_ON_STARTUP:false}
     # Linux sin libsecret (contenedor alpine): permite guardar la caché de tokens sin cifrar. En macOS se usa el llavero igual.
     allow-unencrypted-cache: ${GRAPH_ALLOW_UNENCRYPTED_CACHE:false}
+    # En contenedores Docker / Cloud Run se desactiva para usar la caché en memoria y evitar dependencias de libsecret
+    persistent-cache-enabled: ${GRAPH_PERSISTENT_CACHE_ENABLED:true}
 
   polling:
     enabled: false

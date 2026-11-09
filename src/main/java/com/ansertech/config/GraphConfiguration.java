@@ -36,16 +36,19 @@ public class GraphConfiguration {
     @Value("${microsoft.graph.allow-unencrypted-cache:false}")
     private boolean allowUnencryptedCache;
 
+    @Value("${microsoft.graph.persistent-cache-enabled:true}")
+    private boolean persistentCacheEnabled;
+
     @Bean
     public DeviceCodeCredential deviceCodeCredential(GraphConnectionState connectionState) {
-        TokenCachePersistenceOptions tokenCacheOptions = new TokenCachePersistenceOptions()
-                .setName("ansertech-graph-cache")
-                .setUnencryptedStorageAllowed(allowUnencryptedCache);
 
-        return new DeviceCodeCredentialBuilder()
+
+
+
+        DeviceCodeCredentialBuilder builder = new DeviceCodeCredentialBuilder()
                 .clientId(clientId)
                 .tenantId(tenantId)
-                .tokenCachePersistenceOptions(tokenCacheOptions)
+
                 .challengeConsumer(challenge -> {
                     // azure-identity solo lo imprime en System.out; aquí va al log (consola + archivo)
                     // y al estado en memoria que lee el portal.
@@ -57,7 +60,18 @@ public class GraphConfiguration {
                             challenge.getExpiresOn(),
                             challenge.getMessage());
                 })
-                .build();
+                ;
+
+        if (persistentCacheEnabled) {
+            TokenCachePersistenceOptions tokenCacheOptions = new TokenCachePersistenceOptions()
+                    .setName("ansertech-graph-cache")
+                    .setUnencryptedStorageAllowed(allowUnencryptedCache);
+            builder.tokenCachePersistenceOptions(tokenCacheOptions);
+        } else {
+            log.info("Caché persistente de tokens deshabilitada en este entorno (usando caché en memoria)");
+        }
+
+        return builder.build();
     }
 
     @Bean
