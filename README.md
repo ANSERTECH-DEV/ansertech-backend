@@ -31,7 +31,7 @@ Estados del RFQ: `PROCESSING → PENDING_REVIEW → QUOTING → QUOTED` (o `→ 
 | `DB_HOST` / `DB_NAME` / `DB_USER` / `DB_PASSWORD` (o `DB_URL`) | Sí | `localhost` / `ansertech_db` / `postgres` / `admin` ⚠️ |
 | `JWT_SECRET` | Sí | secreto hardcodeado ⚠️ |
 | `GCP_PROJECT_ID`, `GCP_LOCATION`, `GOOGLE_APPLICATION_CREDENTIALS` | Sí | — |
-| `GRAPH_CLIENT_ID`, `GRAPH_TENANT_ID` | Sí | `""`, `consumers` |
+| `GRAPH_CLIENT_ID`, `GRAPH_TENANT_ID` | Sí | `""`, `consumers` (cuenta personal de Outlook; ver nota en "Vincular Outlook") |
 | `AZURE_STORAGE_CONNECTION_STRING` | Sí (para PDFs) | — (cuenta actual: `ansertechsa`, desde 2026-09-30) |
 | `AZURE_STORAGE_CONTAINER` | No | `quotations` |
 | `JWT_EXPIRATION_MS`, `SERVER_PORT`, `STORAGE_PATH` | No | `28800000`, `8080`, `./storage` |
@@ -82,11 +82,14 @@ El backend está publicado en `https://ansertech-backend-183235697489.southameri
 
 > ⚠️ **Al 2026-11-08 (22:37), Cloud Run corre una versión anterior a la vinculación de Outlook**: `/api/auth/graph/**` y `/api/admin/logs` todavía no existen allí (responden 500, ver Problemas conocidos). Cloud Run no se actualiza con el push: hay que construir la imagen con el `Dockerfile` y desplegarla. El servicio no está en el proyecto de GCP de `piero.ticona.python@gmail.com`; lo despliega quien tenga acceso.
 
-**Probar en local con el front:** el front llama a la URL de `apiUrl` en `environment.ts`, que hoy es Cloud Run. Para usar el backend local, activa la línea de `http://localhost:8080/api`, cierra sesión y vuelve a entrar (el JWT de Cloud Run no sirve en local: cada backend firma con su propio `JWT_SECRET`). Para confirmar a qué backend llegan las peticiones, revisa si tu `Login exitoso: …` aparece en `logs/ansertech-backend.log`. Las variables de entorno de la tabla de arriba se configuran en el servicio de Cloud Run, no en el repo. Si el servicio arranca en frío, la primera petición puede tardar varios segundos. Graph sigue con Device Code Flow. Desde el 2026-11-08 el código se muestra en el portal (Dashboard → "Conexión con Outlook", solo ADMIN), además de en el log.
+**Probar en local con el front:** el front llama a la URL de `apiUrl` en `environment.ts`, que hoy (2026-11-09) es `http://localhost:8080/api`, con la línea de Cloud Run comentada. Al cambiar de backend, cierra sesión y vuelve a entrar (cada backend firma el JWT con su propio `JWT_SECRET`). Para confirmar a qué backend llegan las peticiones, revisa si tu `Login exitoso: …` aparece en `logs/ansertech-backend.log`. Las variables de entorno de la tabla de arriba se configuran en el servicio de Cloud Run, no en el repo. Si el servicio arranca en frío, la primera petición puede tardar varios segundos. Graph sigue con Device Code Flow. Desde el 2026-11-08 el código se muestra en el portal (Dashboard → "Conexión con Outlook", solo ADMIN), además de en el log.
 
 **Vincular Outlook (Device Code Flow):**
-- `POST /api/auth/graph/connect` (ADMIN) pide el token en un hilo aparte y responde en ≤5 s. Si la caché de tokens sirve, el estado queda `CONNECTED`. Si no, Microsoft entrega un código y el estado queda `PENDING` con `url`, `code` y `expiresOn` (unos 15 min).
-- `GET /api/auth/graph/device-code` (ADMIN) devuelve ese estado. El código vive en memoria (`GraphConnectionState`). Si no está, se busca en el log la última línea `[MICROSOFT_DEVICE_CODE]` vigente (`source: LOG`).
+- El código aparece en el log (línea `[MICROSOFT_DEVICE_CODE]`, vigente unos 15 min) cuando el backend necesita un token y la caché no sirve: al ejecutar el polling, al enviar correo o al arrancar con `GRAPH_CONNECT_ON_STARTUP=true`.
+- `GET /api/auth/graph/device-code` (ADMIN) busca en las últimas 500 líneas del log el código vigente. Responde `PENDING` con `url`, `code` y `expiresOn`, o `NOT_CONNECTED` si no hay. Solo lee: no contacta a Microsoft ni espera resultados. El log no indica si el código ya se usó, así que sigue apareciendo hasta que vence.
+- El portal llama a ese endpoint solo al pulsar **Actualizar** (Dashboard → "Conexión con Outlook"); el usuario abre la URL e ingresa el código manualmente.
+- `POST /api/auth/graph/connect` (ADMIN) sigue disponible, pero desde el 2026-11-09 el portal ya no lo usa.
+- **Tenant:** desde `d8decd1` el valor sale de `GRAPH_TENANT_ID`. Con la cuenta personal debe ser `consumers`. `organizations` admite solo cuentas de trabajo o escuela, `common` ambas, y un GUID solo los usuarios de ese tenant. Un GUID con una cuenta sin buzón en ese tenant es la causa probable del `401 ... no response body` al leer el correo. El App Registration también debe aceptar ese tipo de cuenta.
 - `GET /api/admin/logs?lines=50` (ADMIN, `text/plain`, máx. 500) lee el final del log sin cargarlo entero. Si el archivo no existe, responde 200 con un aviso.
 - Las dos rutas `/api/auth/graph/**` exigen ADMIN aunque `/api/auth/**` sea público: la regla va antes en `SecurityConfig`. No deben ser públicas: quien vea el código puede vincular **su** cuenta de Microsoft y el backend leería y enviaría correos con ella.
 - Variables: `GRAPH_CONNECT_ON_STARTUP` (por defecto `false`; con `true` pide el token al arrancar) y `GRAPH_ALLOW_UNENCRYPTED_CACHE` (el `Dockerfile` la pone en `true` porque alpine no trae libsecret; en macOS se usa el llavero igual). El `Dockerfile` también fija `LOG_FILE=/tmp/ansertech.log`.

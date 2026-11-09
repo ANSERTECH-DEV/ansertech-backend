@@ -15,7 +15,7 @@ import com.ansertech.exception.ResourceNotFoundException;
 import com.ansertech.repository.EmailRepository;
 import com.ansertech.repository.QuotationRepository;
 import com.ansertech.repository.RfqRepository;
-import com.ansertech.service.email.EmailPipelineScheduler;
+import com.ansertech.service.email.ManualPollingService;
 import com.ansertech.service.email.EmailPollingService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -55,7 +55,7 @@ public class EmailController {
     private final EmailRepository emailRepository;
     private final RfqRepository rfqRepository;
     private final QuotationRepository quotationRepository;
-    private final EmailPipelineScheduler scheduler;
+    private final ManualPollingService manualPollingService;
     private final ObjectMapper objectMapper;
     private final AuditService auditService;
 
@@ -100,12 +100,16 @@ public class EmailController {
 
     @PostMapping("/trigger-polling")
     @PreAuthorize("hasRole('ADMIN')")
-    @Operation(summary = "Forzar polling manual de correos")
+    @Operation(summary = "Iniciar en segundo plano el polling manual de correos",
+            description = "Responde 202 sin esperar a que termine. La cantidad de correos sale del parámetro 'Cantidad de correos'.")
     public ResponseEntity<ApiResponse<String>> triggerPolling() {
-        //scheduler.runPipeline();
+        if (!manualPollingService.start()) {
+            return ResponseEntity.accepted().body(ApiResponse.ok("ALREADY_RUNNING",
+                    "Ya hay una lectura de correos en curso."));
+        }
         auditService.record(AuditAction.EMAIL_POLLING_TRIGGERED, "EMAIL", null, AuditService.details());
-        scheduler.runPipelineManually();
-        return ResponseEntity.ok(ApiResponse.ok("Polling ejecutado", "Pipeline iniciado"));
+        return ResponseEntity.accepted().body(ApiResponse.ok("STARTED",
+                "Lectura de correos iniciada. Pulsa Actualizar en unos momentos para ver las nuevas solicitudes."));
     }
 
     // ── Excel Export ──────────────────────────────────────────────────────────

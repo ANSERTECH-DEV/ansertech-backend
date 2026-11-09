@@ -21,4 +21,16 @@ public class AsyncConfig {
         executor.initialize();
         return executor;
     }
+
+    /** Polling manual de correos: hilo propio para no retrasar el stock-check. */
+    @Bean("emailPollingExecutor")
+    public Executor emailPollingExecutor() {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setCorePoolSize(1);
+        executor.setMaxPoolSize(1);
+        executor.setQueueCapacity(0);
+        executor.setThreadNamePrefix("email-polling-");
+        executor.initialize();
+        return executor;
+    }
 }
