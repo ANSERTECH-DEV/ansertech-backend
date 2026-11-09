@@ -26,8 +26,8 @@ public class GraphConfiguration {
     @Value("${microsoft.graph.client-id}")
     private String clientId;
 
-    @Value("${microsoft.graph.tenant-id:consumers}")
-    private String tenantId;
+    //@Value("${microsoft.graph.tenant-id:consumers}")
+    private final String tenantId = "consumers";
 
     /**
      * En Linux (contenedor de Cloud Run) la caché cifrada necesita libsecret, que la imagen alpine no trae.
