@@ -24,7 +24,7 @@ public class GraphAuthController {
     private final GraphAuthService graphAuthService;
 
     @GetMapping("/device-code")
-    @Operation(summary = "Estado de la vinculación y, si está pendiente, la URL y el código a ingresar")
+    @Operation(summary = "URL y código de Microsoft vigentes, leídos de las últimas líneas del log")
     public ResponseEntity<ApiResponse<GraphConnectionResponse>> deviceCode() {
         return ResponseEntity.ok(ApiResponse.ok(graphAuthService.status()));
     }

@@ -61,13 +61,10 @@ public class GraphAuthService {
         }
     }
 
-    /** Estado actual; si la memoria no tiene un código, intenta recuperarlo del log. */
+    /** URL y código vigentes según las últimas líneas del log. Solo lee: no contacta a Microsoft ni espera resultados. */
     public GraphConnectionResponse status() {
-        GraphConnectionResponse current = state.snapshot();
-        if ("NOT_CONNECTED".equals(current.getStatus())) {
-            return logReader.findLatestDeviceCode().orElse(current);
-        }
-        return current;
+        return logReader.findLatestDeviceCode()
+                .orElseGet(() -> GraphConnectionResponse.builder().status("NOT_CONNECTED").build());
     }
 
     /** Inicia la vinculación (si no hay una en curso) y devuelve el estado sin esperar a que termine. */
