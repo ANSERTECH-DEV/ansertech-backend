@@ -13,6 +13,8 @@ spring:
     properties:
       hibernate:
         dialect: org.hibernate.dialect.PostgreSQLDialect
+        jdbc:
+          time_zone: America/Lima
   servlet:
     multipart:
       # Carga masiva de inventario (POST /api/inventory/import)

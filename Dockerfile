@@ -18,7 +18,8 @@ RUN mkdir -p /app/storage/quotations && chown -R ansertech:ansertech /app
 USER ansertech
 # Log en /tmp (escribible en Cloud Run); lo lee GET /api/admin/logs.
 # La caché de tokens de Graph va sin cifrar porque alpine no trae libsecret; el disco del contenedor es efímero.
-ENV LOG_FILE=/tmp/ansertech.log \
+ENV TZ=America/Lima \
+    LOG_FILE=/tmp/ansertech.log \
     GRAPH_ALLOW_UNENCRYPTED_CACHE=true \
     GRAPH_PERSISTENT_CACHE_ENABLED=false
 EXPOSE 8080
