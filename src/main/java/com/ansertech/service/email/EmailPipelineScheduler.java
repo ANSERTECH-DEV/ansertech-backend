@@ -6,6 +6,7 @@ import com.ansertech.service.audit.AuditService;
 import com.ansertech.domain.entity.Email;
 import com.ansertech.domain.enums.EmailStatus;
 import com.ansertech.repository.EmailRepository;
+import com.ansertech.service.parameter.ParameterService;
 import com.ansertech.service.quotation.QuotationService;
 import com.ansertech.service.rfq.RfqExtractionService;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -31,6 +32,7 @@ public class EmailPipelineScheduler {
     private final EmailRepository emailRepository;
     private final ObjectMapper objectMapper;
     private final AuditService auditService;
+    private final ParameterService parameterService;
 
     @Value("${microsoft.polling.enabled:false}")
     private boolean pollingEnabled;
@@ -42,7 +44,9 @@ public class EmailPipelineScheduler {
         // ejecuta polling
         log.info("Iniciando polling de correos — {}", LocalDateTime.now());
         try {
-            List<EmailPollingService.RawEmailData> rawEmails = pollingService.fetchUnreadEmails(maxResults);
+            int emailCount = parameterService.getEmailCount(maxResults);
+            log.info("Polling manual: se consultarán hasta {} correos", emailCount);
+            List<EmailPollingService.RawEmailData> rawEmails = pollingService.fetchUnreadEmails(emailCount);
             log.info("Correos nuevos encontrados: {}", rawEmails.size());
 
             for (EmailPollingService.RawEmailData raw : rawEmails) {
