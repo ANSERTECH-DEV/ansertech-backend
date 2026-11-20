@@ -79,6 +79,7 @@ public class RfqStockCheckQueueService {
 
         } catch (Exception e) {
             log.error("[StockCheckQueue] Error en stock-check de RFQ {}: {}", rfqId, e.getMessage(), e);
+            // Con el error ya no se marcan todos los ítems como "sin coincidencia": queda FAILED para reintentar.
 
             result.setStatus(StockCheckStatus.FAILED);
             result.setProcessedAt(LocalDateTime.now());
@@ -88,6 +89,23 @@ public class RfqStockCheckQueueService {
                     AuditService.details("error", e.getMessage()));
 
             // RFQ permanece en PROCESSING para que el operador pueda reintentar
+        }
+    }
+
+    /**
+     * Vuelve a encolar el matching de un RFQ: tras un FAILED (Reintentar) o para volver a analizar uno en
+     * PENDING_REVIEW. El RFQ pasa a PROCESSING (transición del sistema, como la inicial) hasta que termine.
+     */
+    @Transactional
+    public void prepareRetry(Rfq rfq) {
+        RfqStockCheckResult result = stockCheckResultRepository.findByRfqId(rfq.getId())
+                .orElseGet(() -> RfqStockCheckResult.builder().rfqId(rfq.getId()).build());
+        result.setStatus(StockCheckStatus.PROCESSING);
+        result.setErrorMessage(null);
+        stockCheckResultRepository.save(result);
+        if (rfq.getStatus() != RfqStatus.PROCESSING) {
+            rfq.setStatus(RfqStatus.PROCESSING);
+            rfqRepository.save(rfq);
         }
     }
 }

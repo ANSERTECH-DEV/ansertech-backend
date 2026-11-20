@@ -31,7 +31,8 @@ Estados del RFQ: `PROCESSING → PENDING_REVIEW → QUOTING → QUOTED` (o `→ 
 | `DB_HOST` / `DB_NAME` / `DB_USER` / `DB_PASSWORD` (o `DB_URL`) | Sí | `localhost` / `ansertech_db` / `postgres` / `admin` ⚠️ |
 | `JWT_SECRET` | Sí | secreto hardcodeado ⚠️ |
 | `GCP_PROJECT_ID`, `GCP_LOCATION`, `GOOGLE_APPLICATION_CREDENTIALS` | Sí | — |
-| `GRAPH_CLIENT_ID`, `GRAPH_TENANT_ID` | Sí | `""`, `consumers` (cuenta personal de Outlook; ver nota en "Vincular Outlook") |
+| `GRAPH_CLIENT_ID` | Sí | `""` |
+| `GRAPH_TENANT_ID` | No (se ignora) | Desde `830d790` el tenant está fijo en `consumers` en `GraphConfiguration` (cuenta personal de Outlook; ver nota en "Vincular Outlook") |
 | `AZURE_STORAGE_CONNECTION_STRING` | Sí (para PDFs) | — (cuenta actual: `ansertechsa`, desde 2026-09-30) |
 | `AZURE_STORAGE_CONTAINER` | No | `quotations` |
 | `JWT_EXPIRATION_MS`, `SERVER_PORT`, `STORAGE_PATH` | No | `28800000`, `8080`, `./storage` |
@@ -58,7 +59,22 @@ mvn spring-boot:run
 
 **Logs:** además de la consola, el backend escribe `logs/ansertech-backend.log` (cambia la ruta con `LOG_FILE`; la carpeta está en `.gitignore` como `/logs/`, solo la de la raíz: hasta el 2026-11-08 era `logs/` y también ignoraba el paquete `service/logs/`, lo que habría dejado `LogReaderService` fuera del commit). Si una cotización no llega al cliente, busca ahí `Error generando/subiendo PDF`, `Error enviando email` o `REQUIRES AUTHENTICATION`.
 
-**Polling de correo (desde 2026-11-06 viene apagado):** `application.yml` trae `microsoft.polling.enabled: false`, así que el backend no lee Outlook por su cuenta. Para leer los correos se usa `POST /api/emails/trigger-polling` (ADMIN), que llama a `EmailPipelineScheduler.runPipelineManually()`: corre aunque `enabled` sea `false`, procesa hasta 5 correos no leídos (`max-messages-per-poll`) y no responde hasta terminar (las llamadas a Gemini van dentro del request, así que puede demorar varios segundos por correo). La respuesta dice "Pipeline iniciado", pero en realidad ya terminó; el resultado se ve en el log. El frontend tiene `EmailService.triggerPolling()`, pero ningún botón lo usa todavía. Si se reactiva el polling automático, revisa antes `fixed-delay-ms`: ahora está en `20000` (cada 20 s), no en los 4 min de antes.
+**Polling de correo (desde 2026-11-06 viene apagado):** `application.yml` trae `microsoft.polling.enabled: false`, así que el backend no lee Outlook por su cuenta. Para leer los correos se usa `POST /api/emails/trigger-polling` (ADMIN). En el portal lo llama el botón "Leer los últimos N correos" de Cotizaciones. Corre aunque `enabled` sea `false`. Si se reactiva el polling automático, revisa antes `fixed-delay-ms`: ahora está en `20000` (cada 20 s), no en los 4 min de antes.
+
+- **Asíncrono (desde 2026-11-09):** `ManualPollingService` lanza `runPipelineManually()` en el executor `emailPollingExecutor` (1 hilo, sin cola) y el endpoint responde de inmediato **202** con `data: "STARTED"`.
+- **Sin ejecuciones simultáneas:** un `AtomicBoolean` impide dos lecturas a la vez; si ya hay una en curso responde 200 con `data: "ALREADY_RUNNING"`. El resultado se ve en el log (`Polling manual: se consultarán hasta N correos`).
+- **Cantidad de correos:** sale del parámetro "Cantidad de correos" (ver "Parámetros"). Si falta o no es un entero entre 1 y 1000, se usa `microsoft.polling.max-messages-per-poll` (2 por defecto).
+- **En Cloud Run** el trabajo sigue después de responder, así que hace falta "CPU siempre asignada"; si no, el contenedor puede quedarse sin CPU a mitad de la lectura.
+
+**Parámetros (desde 2026-11-13, `e906cff`):** la tabla `parameters` (`id`, `name` único, `description`, `value` texto, `created_at`) guarda valores configurables. Hoy hay uno: **"Cantidad de correos"** (valor inicial `2`, script `V12`).
+
+| Endpoint | Rol | Qué hace |
+|---|---|---|
+| `GET /api/parameters` | autenticado | Lista todos, ordenados por id |
+| `GET /api/parameters/email-count` | autenticado | Valor efectivo de "Cantidad de correos" (con el respaldo de `max-messages-per-poll`) |
+| `PATCH /api/parameters/{id}` (`{"value": "5"}`) | ADMIN | Cambia el valor. 404 si el id no existe, 400 si está vacío o, para "Cantidad de correos", si no es un entero entre 1 y 1000. Se audita como `PARAMETER_UPDATED` (nombre, valor anterior y nuevo) |
+
+No hay endpoint para crear ni borrar parámetros: se agregan por script.
 
 ## Docker
 
@@ -82,14 +98,16 @@ El backend está publicado en `https://ansertech-backend-183235697489.southameri
 
 > ⚠️ **Al 2026-11-08 (22:37), Cloud Run corre una versión anterior a la vinculación de Outlook**: `/api/auth/graph/**` y `/api/admin/logs` todavía no existen allí (responden 500, ver Problemas conocidos). Cloud Run no se actualiza con el push: hay que construir la imagen con el `Dockerfile` y desplegarla. El servicio no está en el proyecto de GCP de `piero.ticona.python@gmail.com`; lo despliega quien tenga acceso.
 
-**Probar en local con el front:** el front llama a la URL de `apiUrl` en `environment.ts`, que hoy (2026-11-09) es `http://localhost:8080/api`, con la línea de Cloud Run comentada. Al cambiar de backend, cierra sesión y vuelve a entrar (cada backend firma el JWT con su propio `JWT_SECRET`). Para confirmar a qué backend llegan las peticiones, revisa si tu `Login exitoso: …` aparece en `logs/ansertech-backend.log`. Las variables de entorno de la tabla de arriba se configuran en el servicio de Cloud Run, no en el repo. Si el servicio arranca en frío, la primera petición puede tardar varios segundos. Graph sigue con Device Code Flow. Desde el 2026-11-08 el código se muestra en el portal (Dashboard → "Conexión con Outlook", solo ADMIN), además de en el log.
+**Probar en local con el front:** el front llama a la URL de `apiUrl` en `environment.ts`, que hoy (2026-11-13, commit `436154d` del front) es otra vez Cloud Run, con la línea de `http://localhost:8080/api` comentada. Para probar contra el backend local hay que descomentar esa línea. Al cambiar de backend, cierra sesión y vuelve a entrar (cada backend firma el JWT con su propio `JWT_SECRET`). Para confirmar a qué backend llegan las peticiones, revisa si tu `Login exitoso: …` aparece en `logs/ansertech-backend.log`. Las variables de entorno de la tabla de arriba se configuran en el servicio de Cloud Run, no en el repo. Si el servicio arranca en frío, la primera petición puede tardar varios segundos. Graph sigue con Device Code Flow. Desde el 2026-11-08 el código se muestra en el portal (Dashboard → "Conexión con Outlook", solo ADMIN), además de en el log.
 
 **Vincular Outlook (Device Code Flow):**
 - El código aparece en el log (línea `[MICROSOFT_DEVICE_CODE]`, vigente unos 15 min) cuando el backend necesita un token y la caché no sirve: al ejecutar el polling, al enviar correo o al arrancar con `GRAPH_CONNECT_ON_STARTUP=true`.
 - `GET /api/auth/graph/device-code` (ADMIN) busca en las últimas 500 líneas del log el código vigente. Responde `PENDING` con `url`, `code` y `expiresOn`, o `NOT_CONNECTED` si no hay. Solo lee: no contacta a Microsoft ni espera resultados. El log no indica si el código ya se usó, así que sigue apareciendo hasta que vence.
 - El portal llama a ese endpoint solo al pulsar **Actualizar** (Dashboard → "Conexión con Outlook"); el usuario abre la URL e ingresa el código manualmente.
 - `POST /api/auth/graph/connect` (ADMIN) sigue disponible, pero desde el 2026-11-09 el portal ya no lo usa.
-- **Tenant:** desde `d8decd1` el valor sale de `GRAPH_TENANT_ID`. Con la cuenta personal debe ser `consumers`. `organizations` admite solo cuentas de trabajo o escuela, `common` ambas, y un GUID solo los usuarios de ese tenant. Un GUID con una cuenta sin buzón en ese tenant es la causa probable del `401 ... no response body` al leer el correo. El App Registration también debe aceptar ese tipo de cuenta.
+- **Tenant:** está fijo en `consumers` (cuenta personal) en `GraphConfiguration` desde `830d790`; la línea `@Value("${microsoft.graph.tenant-id:consumers}")` quedó comentada, así que `GRAPH_TENANT_ID` ya no tiene efecto.
+  - Entre `d8decd1` y `830d790` el valor salía de `GRAPH_TENANT_ID`. El GUID configurado en IntelliJ provocaba `401 ... no response body` al leer el correo. Con `consumers` el polling volvió a funcionar (2026-11-09).
+  - Para pasar a una cuenta empresarial habrá que volver a leer la variable (`organizations` o el GUID del tenant). El App Registration también debe aceptar ese tipo de cuenta.
 - `GET /api/admin/logs?lines=50` (ADMIN, `text/plain`, máx. 500) lee el final del log sin cargarlo entero. Si el archivo no existe, responde 200 con un aviso.
 - Las dos rutas `/api/auth/graph/**` exigen ADMIN aunque `/api/auth/**` sea público: la regla va antes en `SecurityConfig`. No deben ser públicas: quien vea el código puede vincular **su** cuenta de Microsoft y el backend leería y enviaría correos con ella.
 - Variables: `GRAPH_CONNECT_ON_STARTUP` (por defecto `false`; con `true` pide el token al arrancar) y `GRAPH_ALLOW_UNENCRYPTED_CACHE` (el `Dockerfile` la pone en `true` porque alpine no trae libsecret; en macOS se usa el llavero igual). El `Dockerfile` también fija `LOG_FILE=/tmp/ansertech.log`.
@@ -114,6 +132,7 @@ Flyway está deshabilitado: el esquema se mantiene con `ddl-auto: update` y los 
 - `V9__seed_catalogo_productos.sql`: catálogo de laboratorio/instrumentación (fuente `Catalogo_productos.xlsx`, generado con `../scripts/build_v9_catalogo.py`; no editar a mano). El archivo actual trae 538 productos, porque excluye los 5 retirados en V11. Precios sin IGV en soles enteros; SKU y stock asignados; 321 precios estimados (datos de demostración).
 - `V10__redondear_precios.sql`: `products.unit_price` → `NUMERIC(12,0)` (**precios en soles enteros**, 4555.93 → 4556). `Product` lo refuerza con `scale = 0` y un `@PrePersist/@PreUpdate` que redondea, así que crear, editar y la carga masiva guardan enteros. Las cotizaciones siguen con 2 decimales.
 - `V11__eliminar_productos_sin_existencias.sql`: retira 5 productos "Sin existencias" (los borra, o los desactiva si están en `quotation_items`).
+- `V12__crear_parametros.sql`: crea `parameters` (si no existe) e inserta "Cantidad de correos" = `2` (`ON CONFLICT DO NOTHING`, se puede ejecutar más de una vez). `ddl-auto: update` crea la tabla sola, pero vacía: sin V12, el portal muestra "No hay parámetros registrados" y el polling manual usa `max-messages-per-poll`. ⚠️ Falta confirmar que V12 se ejecutó en Azure.
 - V10 y V11 se ejecutaron en Azure el 2026-09-29. ⚠️ Falta confirmar que V11 se aplicó: la UI seguía mostrando 5 productos con stock bajo.
 - ⚠️ `src/main/resources/db` está en `.gitignore`: las migraciones no están en el repositorio.
 
@@ -124,7 +143,7 @@ mvn test
 open target/site/jacoco/index.html
 ```
 
-79 tests JUnit 5 (2026-11-08: 58 pasan y 21 se saltan sin Docker): unitarios (`QuotationService`, `EmailClassificationService`, `RfqStatus`, `InventoryImportService`, `InventoryTemplateService`, `Product`, `AuditService`, `DashboardService`, `LogReaderService`, `GraphConnectionState`) e integración con PostgreSQL real vía Testcontainers (`RepositoryPersistenceTest`, `RfqLifecycleIntegrationTest`, `SecurityRbacIntegrationTest`, `InventoryImportIntegrationTest`). Vertex AI, Graph y Azure se mockean: ningún test hace llamadas reales. Sin Docker, los tests de Testcontainers se saltan solos (2026-09-29, sin Docker: 43 pasan y 21 se saltan). Resultados: [`../docs/informe_testing.md`](../docs/informe_testing.md).
+100 tests JUnit 5 (2026-11-13: 79 pasan, 0 fallan y 21 se saltan sin Docker): unitarios (`QuotationService`, `EmailClassificationService`, `RfqStatus`, `InventoryImportService`, `InventoryTemplateService`, `Product`, `AuditService`, `DashboardService`, `LogReaderService`, `GraphConnectionState`, `ManualPollingService` y `ParameterService`) e integración con PostgreSQL real vía Testcontainers (`RepositoryPersistenceTest`, `RfqLifecycleIntegrationTest`, `SecurityRbacIntegrationTest`, `InventoryImportIntegrationTest`). Vertex AI, Graph y Azure se mockean: ningún test hace llamadas reales. Sin Docker, los tests de Testcontainers se saltan solos (2026-09-29, sin Docker: 43 pasan y 21 se saltan). Resultados: [`../docs/informe_testing.md`](../docs/informe_testing.md).
 
 ## Estructura
 
@@ -144,6 +163,7 @@ com.ansertech/
 
 - **`POST /api/auth/register` es público y acepta `role: ADMIN`**: cualquiera puede crearse una cuenta de administrador. **Ya está desplegado en Cloud Run**, así que esto es urgente.
 - `confirm`, `reject` y `reclassify` no exigen rol.
+- **El polling manual puede quedarse sin avanzar:** `processEmail` sale antes de tiempo si el correo ya está registrado, sin marcarlo como leído. Si los N correos no leídos más recientes ya están en la BD (N = "Cantidad de correos"), cada lectura vuelve a traer esos mismos y nunca llega a los nuevos. Solución temporal: marcarlos como leídos en Outlook o subir el parámetro.
 - `EmailController.reclassify` puede lanzar NPE si el body no trae `status`.
 - **RFQ pegados al apagar el backend:** si se apaga durante una aprobación, el RFQ queda en `QUOTING` sin salida, porque `canTransitionTo()` no permite volver a `PENDING_REVIEW`. Los RFQ que estaban en la cola de stock-check, que vive en memoria, quedan en `PROCESSING`. Al arrancar no se recupera nada: hay que corregirlos en pgAdmin (ver `proyecto_tesis_resumen.md` §5, problema #18). Evita detener el backend mientras se aprueba o procesa algo.
 - **Fallo silencioso al aprobar:** si falla el PDF o el correo, el error solo queda en el log, el RFQ pasa igual a `QUOTED` y, si falló el PDF, se guarda una segunda cotización vacía. Si el PDF da `UnknownHostException ...blob.core.windows.net`, la cuenta de Azure Storage no existe: revisa `AZURE_STORAGE_CONNECTION_STRING`.

@@ -35,6 +35,7 @@ import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 import java.io.ByteArrayOutputStream;
+import java.time.Clock;
 import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -42,6 +43,8 @@ import java.time.format.DateTimeFormatter;
 import com.ansertech.exception.BusinessException;
 import io.swagger.v3.oas.annotations.Parameter;
 import org.springframework.format.annotation.DateTimeFormat;
+import java.util.Collection;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -58,6 +61,7 @@ public class EmailController {
     private final ManualPollingService manualPollingService;
     private final ObjectMapper objectMapper;
     private final AuditService auditService;
+    private final Clock clock;
 
     private static final DateTimeFormatter DATE_FMT = DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm");
 
@@ -116,8 +120,9 @@ public class EmailController {
 
     @GetMapping("/export")
     @Operation(summary = "Exportar reporte de correos procesados a Excel",
-            description = "Filtro opcional por rango de 'Fecha recibido' (ambos extremos inclusive). "
-                    + "Si el correo no tiene fecha de recepción se usa su 'Fecha Gestión' (created_at).")
+            description = "Filtro opcional por rango de 'Fecha Gestión' (emails.created_at: cuándo el sistema "
+                    + "leyó y procesó el correo), ambos extremos inclusive. Si no la tiene se usa processed_at. "
+                    + "No filtra por 'Fecha recibido': un correo antiguo leído en el periodo sí aparece.")
     public ResponseEntity<byte[]> exportExcel(
             @Parameter(description = "Desde (yyyy-MM-dd), inclusive")
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate from,
@@ -129,9 +134,15 @@ public class EmailController {
         LocalDateTime fromTs = from != null ? from.atStartOfDay() : LocalDateTime.of(1970, 1, 1, 0, 0);
         LocalDateTime toTs   = to   != null ? to.plusDays(1).atStartOfDay() : LocalDateTime.of(9999, 1, 1, 0, 0);
         List<Email> emails = emailRepository.findForReport(fromTs, toTs);
+        String filename = reportFilename(from, to);
         auditService.record(AuditAction.EMAIL_REPORT_EXPORTED, "REPORT", null,
-                AuditService.details("archivo", reportFilename(from, to), "desde", from, "hasta", to,
+                AuditService.details("archivo", filename, "desde", from, "hasta", to,
                         "correos", emails.size()));
+
+        // Carga en lote (2 consultas en total) en vez de 1-3 por correo: con ~500 correos y la BD en Azure,
+        // el N+1 tardaba ~108 s desde Cloud Run (hallazgo H7).
+        Map<Long, Rfq> rfqByEmailId = loadRfqsByEmailId(emails);
+        Map<Long, Quotation> quotationByRfqId = loadFirstQuotationByRfqId(rfqByEmailId.values());
 
         try (XSSFWorkbook wb = new XSSFWorkbook()) {
             Sheet sheet = wb.createSheet("Reporte Correos");
@@ -185,10 +196,8 @@ public class EmailController {
             // ── Filas de datos ────────────────────────────────────────────
             int rowNum = 2;
             for (Email email : emails) {
-                Optional<Rfq> rfqOpt = rfqRepository.findByEmailId(email.getId());
-                Optional<Quotation> quotOpt = rfqOpt.isPresent()
-                        ? quotationRepository.findFirstByRfqIdOrderByCreatedAtAsc(rfqOpt.get().getId())
-                        : Optional.empty();
+                Optional<Rfq> rfqOpt = Optional.ofNullable(rfqByEmailId.get(email.getId()));
+                Optional<Quotation> quotOpt = rfqOpt.map(r -> quotationByRfqId.get(r.getId()));
 
                 Row row = sheet.createRow(rowNum);
                 boolean isGray = (rowNum % 2 == 0);
@@ -305,14 +314,42 @@ public class EmailController {
                     .contentType(MediaType.parseMediaType(
                             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
                     .header(HttpHeaders.CONTENT_DISPOSITION,
-                            "attachment; filename=\"" + reportFilename(from, to) + "\"")
+                            "attachment; filename=\"" + filename + "\"")
                     .body(baos.toByteArray());
         }
     }
 
-    private String reportFilename(LocalDate from, LocalDate to) {
-        if (from == null && to == null) return "reporte-correos.xlsx";
-        return "reporte-correos_" + (from != null ? from : "inicio") + "_a_" + (to != null ? to : "hoy") + ".xlsx";
+    /**
+     * Mismo nombre que arma el frontend (dashboard.component.ts, emailReportFilename):
+     * reporte-correos_{desde|inicio}_a_{hasta|fecha de hoy}.xlsx, p. ej. reporte-correos_inicio_a_2026-11-17.xlsx.
+     */
+    String reportFilename(LocalDate from, LocalDate to) {
+        return "reporte-correos_" + (from != null ? from : "inicio") + "_a_"
+                + (to != null ? to : LocalDate.now(clock)) + ".xlsx";
+    }
+
+    private static final int IN_BATCH = 1000;
+
+    private Map<Long, Rfq> loadRfqsByEmailId(List<Email> emails) {
+        Map<Long, Rfq> result = new HashMap<>();
+        List<Long> ids = emails.stream().map(Email::getId).toList();
+        for (int i = 0; i < ids.size(); i += IN_BATCH) {
+            for (Rfq rfq : rfqRepository.findWithItemsByEmailIdIn(ids.subList(i, Math.min(i + IN_BATCH, ids.size())))) {
+                result.putIfAbsent(rfq.getEmail().getId(), rfq);
+            }
+        }
+        return result;
+    }
+
+    private Map<Long, Quotation> loadFirstQuotationByRfqId(Collection<Rfq> rfqs) {
+        Map<Long, Quotation> result = new HashMap<>();
+        List<Long> ids = rfqs.stream().map(Rfq::getId).toList();
+        for (int i = 0; i < ids.size(); i += IN_BATCH) {
+            for (Quotation q : quotationRepository.findFirstWithItemsByRfqIdIn(ids.subList(i, Math.min(i + IN_BATCH, ids.size())))) {
+                result.merge(q.getRfq().getId(), q, (a, b) -> a.getId() <= b.getId() ? a : b);
+            }
+        }
+        return result;
     }
 
     // ── Style helpers ─────────────────────────────────────────────────────────
