@@ -10,6 +10,7 @@ import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
 import java.time.LocalDateTime;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 
@@ -18,6 +19,10 @@ public interface RfqRepository extends JpaRepository<Rfq, Long> {
 
     @Query("SELECT r FROM Rfq r LEFT JOIN FETCH r.items WHERE r.email.id = :emailId")
     Optional<Rfq> findByEmailId(@Param("emailId") Long emailId);
+
+    /** Reporte Excel: RFQs (con sus ítems) de varios correos en una sola consulta, para evitar N+1. */
+    @Query("SELECT DISTINCT r FROM Rfq r LEFT JOIN FETCH r.items WHERE r.email.id IN :emailIds")
+    List<Rfq> findWithItemsByEmailIdIn(@Param("emailIds") Collection<Long> emailIds);
     Page<Rfq> findByStatusOrderByCreatedAtDesc(RfqStatus status, Pageable pageable);
     Page<Rfq> findByStatusInOrderByCreatedAtDesc(List<RfqStatus> statuses, Pageable pageable);
     Page<Rfq> findAllByOrderByCreatedAtDesc(Pageable pageable);

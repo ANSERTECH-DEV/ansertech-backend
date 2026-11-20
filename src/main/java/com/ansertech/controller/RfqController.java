@@ -15,6 +15,7 @@ import com.ansertech.exception.BusinessException;
 import com.ansertech.exception.ResourceNotFoundException;
 import com.ansertech.repository.RfqRepository;
 import com.ansertech.repository.RfqStockCheckResultRepository;
+import com.ansertech.service.rfq.RfqStockCheckQueueService;
 import com.ansertech.service.quotation.QuotationService;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -42,6 +43,7 @@ public class RfqController {
     private final QuotationService quotationService;
     private final ObjectMapper objectMapper;
     private final AuditService auditService;
+    private final RfqStockCheckQueueService stockCheckQueueService;
 
     @GetMapping
     @Operation(summary = "Listar RFQs con filtro por estado")
@@ -147,6 +149,25 @@ public class RfqController {
                             .errorMessage("Error deserializando resultado: " + e.getMessage())
                             .build()));
         }
+    }
+
+    @PostMapping("/{id}/stock-check/retry")
+    @Operation(summary = "Vuelve a ejecutar el matching de inventario con Gemini",
+            description = "Para un RFQ en PROCESSING cuyo análisis falló (o se perdió al reiniciar), o para volver a "
+                    + "analizar uno en PENDING_REVIEW. Responde PROCESSING; el resultado se consulta con GET /stock-check.")
+    public ResponseEntity<ApiResponse<StockCheckResultResponse>> retryStockCheck(@PathVariable Long id) {
+        Rfq rfq = findOrThrow(id);
+        if (rfq.getStatus() != RfqStatus.PROCESSING && rfq.getStatus() != RfqStatus.PENDING_REVIEW) {
+            throw new BusinessException("Solo se puede volver a analizar el stock de un RFQ en 'Procesando' o 'Por aprobar'");
+        }
+        RfqStatus previous = rfq.getStatus();
+        stockCheckQueueService.prepareRetry(rfq);
+        stockCheckQueueService.processRfq(id);
+        auditService.record(AuditAction.RFQ_STOCK_CHECK_RETRIED, "RFQ", id,
+                AuditService.details("estadoAnterior", previous.name()));
+        return ResponseEntity.ok(ApiResponse.ok(
+                StockCheckResultResponse.builder().rfqId(id).status(StockCheckStatus.PROCESSING).build(),
+                "Análisis de stock reencolado"));
     }
 
     @PostMapping("/{id}/reject")

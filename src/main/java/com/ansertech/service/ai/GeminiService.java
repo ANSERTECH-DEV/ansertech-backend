@@ -199,24 +199,96 @@ public class GeminiService {
             ]
 
             Reglas:
+            - Evalúa cada ítem de forma independiente: que un ítem no tenga coincidencia NO afecta a los demás.
             - Si un ítem no tiene coincidencia clara (similitud < 0.4), usa matched=false y omite campos de producto.
+            - product_id debe ser el "id" de un producto del catálogo; no inventes productos.
             - stock_sufficient = true cuando stock_quantity >= quantity_requested.
             - similarity_score entre 0.0 y 1.0.
             - Incluye TODOS los ítems de la RFQ en el array de respuesta.
             """;
 
-    public List<StockCheckItemResponse> matchRfqItemsToProducts(List<RfqItem> rfqItems, List<Product> products) {
-        try {
-            String rfqItemsJson = buildRfqItemsJson(rfqItems);
-            String catalogJson  = buildProductCatalogJson(products);
-            String prompt = String.format(STOCK_MATCH_PROMPT, rfqItemsJson, catalogJson);
+    /** Esperas antes de cada reintento cuando Vertex AI responde 429/503/timeout (2 reintentos = 3 intentos). */
+    static final long[] STOCK_MATCH_BACKOFF_MS = {15_000, 45_000};
+    /** Mismo umbral que el prompt: por debajo, el ítem se considera sin coincidencia. */
+    static final double MIN_SIMILARITY = 0.4;
 
-            JsonNode result = callGemini(prompt);
-            return parseStockCheckResult(result, rfqItems, products);
+    /**
+     * Matching semántico de los ítems del RFQ contra el catálogo, en una sola llamada a Gemini.
+     * Cada ítem se evalúa por separado: que uno no tenga coincidencia no afecta a los demás.
+     * Si Gemini falla (incluso tras reintentar) lanza {@link StockMatchException}; ya NO devuelve
+     * "todos sin coincidencia", porque eso se mostraba como si ningún producto existiera en el inventario.
+     */
+    public List<StockCheckItemResponse> matchRfqItemsToProducts(List<RfqItem> rfqItems, List<Product> products) {
+        if (rfqItems == null || rfqItems.isEmpty()) return List.of();
+        String prompt;
+        try {
+            prompt = String.format(STOCK_MATCH_PROMPT, buildRfqItemsJson(rfqItems), buildProductCatalogJson(products));
         } catch (Exception e) {
-            log.error("Error en matching de stock: {}", e.getMessage());
-            return buildFallbackStockCheck(rfqItems);
+            throw new StockMatchException("No se pudo preparar la consulta a Gemini: " + e.getMessage(), e);
         }
+        String raw = generateStockMatchWithRetry(prompt);
+        return parseStockCheckResult(parseJson(raw), rfqItems, products);
+    }
+
+    private String generateStockMatchWithRetry(String prompt) {
+        for (int attempt = 0; ; attempt++) {
+            try {
+                return generateJson(prompt);
+            } catch (Exception e) {
+                boolean retryable = isRetryable(e);
+                if (!retryable || attempt >= STOCK_MATCH_BACKOFF_MS.length) {
+                    log.error("Error en matching de stock (intento {}): {}", attempt + 1, e.getMessage());
+                    throw new StockMatchException(friendlyMessage(e, retryable), e);
+                }
+                long wait = STOCK_MATCH_BACKOFF_MS[attempt];
+                log.warn("Matching de stock: Gemini no disponible ({}). Reintento {} de {} en {} s",
+                        e.getMessage(), attempt + 1, STOCK_MATCH_BACKOFF_MS.length, wait / 1000);
+                sleep(wait);
+            }
+        }
+    }
+
+    /** Llamada real a Vertex AI pidiendo JSON puro y respuestas deterministas. Protegido para poder simularlo en tests. */
+    protected String generateJson(String prompt) throws IOException {
+        GenerationConfig config = GenerationConfig.newBuilder()
+                .setResponseMimeType("application/json")
+                .setTemperature(0f)
+                .build();
+        GenerativeModel model = new GenerativeModel(modelName, vertexAI).withGenerationConfig(config);
+        return ResponseHandler.getText(model.generateContent(prompt));
+    }
+
+    protected void sleep(long millis) {
+        try {
+            Thread.sleep(millis);
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+            throw new StockMatchException("Matching de stock interrumpido", ie);
+        }
+    }
+
+    static boolean isRetryable(Throwable e) {
+        for (Throwable t = e; t != null; t = t.getCause()) {
+            String text = t.getClass().getSimpleName() + " " + t.getMessage();
+            if (text.contains("RESOURCE_EXHAUSTED") || text.contains("ResourceExhausted")
+                    || text.contains("UNAVAILABLE") || text.contains("Unavailable")
+                    || text.contains("DEADLINE_EXCEEDED") || text.contains("DeadlineExceeded")) {
+                return true;
+            }
+            if (t.getCause() == t) break;
+        }
+        return false;
+    }
+
+    private static String friendlyMessage(Throwable e, boolean retryable) {
+        String text = String.valueOf(e.getMessage());
+        if (text.contains("RESOURCE_EXHAUSTED") || text.contains("ResourceExhausted")) {
+            return "Gemini (Vertex AI) alcanzó su límite de uso. Reintenta en unos minutos.";
+        }
+        if (retryable) {
+            return "Gemini (Vertex AI) no está disponible en este momento. Reintenta en unos minutos.";
+        }
+        return "No se pudo completar el análisis de stock con Gemini: " + text;
     }
 
     private String buildRfqItemsJson(List<RfqItem> items) throws Exception {
@@ -247,50 +319,78 @@ public class GeminiService {
         return objectMapper.writeValueAsString(list);
     }
 
-    private List<StockCheckItemResponse> parseStockCheckResult(JsonNode root, List<RfqItem> rfqItems, List<Product> products) {
-        List<StockCheckItemResponse> result = new ArrayList<>();
-        if (!root.isArray()) return buildFallbackStockCheck(rfqItems);
+    /**
+     * Arma el resultado ítem por ítem, en el orden del RFQ. Usa el stock, precio, SKU y nombre reales de la BD
+     * (no los que escribe Gemini). Un ítem queda sin coincidencia si Gemini no lo devolvió, lo marcó matched=false,
+     * su similitud es menor a {@link #MIN_SIMILARITY} o apunta a un product_id que no está en el catálogo.
+     */
+    List<StockCheckItemResponse> parseStockCheckResult(JsonNode root, List<RfqItem> rfqItems, List<Product> products) {
+        JsonNode array = root;
+        if (root != null && root.isObject()) {
+            for (String field : List.of("items", "results", "matches")) {
+                if (root.path(field).isArray()) { array = root.path(field); break; }
+            }
+        }
+        if (array == null || !array.isArray()) {
+            throw new StockMatchException("Gemini devolvió una respuesta sin el formato esperado.", null);
+        }
+
         Map<Long, Product> productsById = new java.util.HashMap<>();
         for (Product p : products) productsById.put(p.getId(), p);
-        for (JsonNode node : root) {
-            boolean matched = node.path("matched").asBoolean(false);
-            StockCheckItemResponse.StockCheckItemResponseBuilder builder = StockCheckItemResponse.builder()
-                    .rfqItemId(node.path("rfq_item_id").asLong(0))
-                    .rfqDescription(node.path("rfq_description").asText(""))
-                    .quantityRequested(node.path("quantity_requested").asDouble(1.0))
-                    .unitRequested(node.path("unit_requested").asText("unidad"))
-                    .matched(matched);
-            if (matched) {
-                long productId = node.path("product_id").asLong(0);
-                Product product = productsById.get(productId);
-                builder
-                    .productId(productId)
-                    .productSku(node.path("product_sku").asText(""))
-                    .productName(node.path("product_name").asText(""))
-                    .similarityScore(node.path("similarity_score").asDouble(0.0))
-                    .matchReason(node.path("match_reason").asText(""))
-                    .stockQuantity(BigDecimal.valueOf(node.path("stock_quantity").asDouble(0.0)))
-                    .stockUnit(node.path("stock_unit").asText("unidad"))
-                    .stockSufficient(node.path("stock_sufficient").asBoolean(false))
-                    .unitPrice(product != null ? product.getUnitPrice() : null);
+        Map<Long, JsonNode> nodesByItemId = new java.util.HashMap<>();
+        for (JsonNode node : array) {
+            long id = node.path("rfq_item_id").asLong(0);
+            if (id > 0) nodesByItemId.putIfAbsent(id, node);
+        }
+
+        List<StockCheckItemResponse> result = new ArrayList<>();
+        for (int i = 0; i < rfqItems.size(); i++) {
+            RfqItem item = rfqItems.get(i);
+            JsonNode node = item.getId() != null ? nodesByItemId.get(item.getId()) : null;
+            if (node == null && nodesByItemId.isEmpty() && i < array.size()) {
+                node = array.get(i);   // Gemini no envió rfq_item_id: se empareja por posición
             }
-            result.add(builder.build());
+            result.add(toStockCheckItem(item, node, productsById));
         }
         return result;
     }
 
-    private List<StockCheckItemResponse> buildFallbackStockCheck(List<RfqItem> rfqItems) {
-        List<StockCheckItemResponse> result = new ArrayList<>();
-        for (RfqItem item : rfqItems) {
-            result.add(StockCheckItemResponse.builder()
-                    .rfqItemId(item.getId())
-                    .rfqDescription(item.getProductDescription() != null ? item.getProductDescription() : "")
-                    .quantityRequested(item.getQuantity() != null ? item.getQuantity().doubleValue() : 1.0)
-                    .unitRequested(item.getUnit() != null ? item.getUnit() : "unidad")
-                    .matched(false)
-                    .build());
+    private StockCheckItemResponse toStockCheckItem(RfqItem item, JsonNode node, Map<Long, Product> productsById) {
+        double qty = item.getQuantity() != null ? item.getQuantity().doubleValue() : 1.0;
+        StockCheckItemResponse.StockCheckItemResponseBuilder builder = StockCheckItemResponse.builder()
+                .rfqItemId(item.getId())
+                .rfqDescription(item.getProductDescription() != null ? item.getProductDescription() : "")
+                .quantityRequested(qty)
+                .unitRequested(item.getUnit() != null ? item.getUnit() : "unidad")
+                .matched(false);
+        if (node == null) {
+            log.warn("Matching de stock: Gemini no devolvió el ítem {} ('{}')", item.getId(), item.getProductDescription());
+            return builder.build();
         }
-        return result;
+        if (!node.path("matched").asBoolean(false)) return builder.build();
+
+        double score = node.path("similarity_score").asDouble(0.0);
+        Product product = productsById.get(node.path("product_id").asLong(0));
+        if (product == null) {
+            log.warn("Matching de stock: Gemini propuso product_id {} para el ítem {}, que no está en el catálogo",
+                    node.path("product_id").asText(), item.getId());
+            return builder.build();
+        }
+        if (score < MIN_SIMILARITY) return builder.build();
+
+        BigDecimal stock = product.getStockQuantity() != null ? product.getStockQuantity() : BigDecimal.ZERO;
+        return builder
+                .matched(true)
+                .productId(product.getId())
+                .productSku(product.getSku())
+                .productName(product.getName())
+                .similarityScore(Math.min(score, 1.0))
+                .matchReason(node.path("match_reason").asText(""))
+                .stockQuantity(stock)
+                .stockUnit(product.getUnit() != null ? product.getUnit() : "unidad")
+                .stockSufficient(stock.compareTo(BigDecimal.valueOf(qty)) >= 0)
+                .unitPrice(product.getUnitPrice())
+                .build();
     }
 
     private JsonNode parseJson(String raw) {

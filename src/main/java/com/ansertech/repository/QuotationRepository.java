@@ -10,12 +10,21 @@ import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
 import java.time.LocalDateTime;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 
 @Repository
 public interface QuotationRepository extends JpaRepository<Quotation, Long> {
     Optional<Quotation> findFirstByRfqIdOrderByCreatedAtAsc(Long rfqId);
+
+    /**
+     * Reporte Excel: primera cotización (con sus ítems) de cada RFQ, en una sola consulta para evitar N+1.
+     * Si dos cotizaciones de un RFQ tienen el mismo created_at vienen ambas; quien llama se queda con la de menor id.
+     */
+    @Query("SELECT DISTINCT q FROM Quotation q LEFT JOIN FETCH q.items WHERE q.rfq.id IN :rfqIds "
+            + "AND q.createdAt = (SELECT MIN(q2.createdAt) FROM Quotation q2 WHERE q2.rfq = q.rfq)")
+    List<Quotation> findFirstWithItemsByRfqIdIn(@Param("rfqIds") Collection<Long> rfqIds);
     Optional<Quotation> findByQuotationNumber(String quotationNumber);
     Page<Quotation> findByStatusOrderByCreatedAtDesc(QuotationStatus status, Pageable pageable);
     Page<Quotation> findAllByOrderByCreatedAtDesc(Pageable pageable);
