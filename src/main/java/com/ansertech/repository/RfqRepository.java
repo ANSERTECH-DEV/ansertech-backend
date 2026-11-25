@@ -20,6 +20,10 @@ public interface RfqRepository extends JpaRepository<Rfq, Long> {
     @Query("SELECT r FROM Rfq r LEFT JOIN FETCH r.items WHERE r.email.id = :emailId")
     Optional<Rfq> findByEmailId(@Param("emailId") Long emailId);
 
+    boolean existsByEmailId(Long emailId);
+
+    List<Rfq> findAllByStatus(RfqStatus status);
+
     /** Reporte Excel: RFQs (con sus ítems) de varios correos en una sola consulta, para evitar N+1. */
     @Query("SELECT DISTINCT r FROM Rfq r LEFT JOIN FETCH r.items WHERE r.email.id IN :emailIds")
     List<Rfq> findWithItemsByEmailIdIn(@Param("emailIds") Collection<Long> emailIds);

@@ -16,6 +16,9 @@ import org.springframework.test.util.ReflectionTestUtils;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
@@ -41,7 +44,7 @@ class EmailClassificationServiceTest {
     @Test
     void highConfidenceSpam_classifiesAsSpam() {
         Email email = email();
-        when(geminiService.classifyEmail(any(), any(), any()))
+        when(geminiService.classifyEmail(any(), any(), any(), anyList()))
                 .thenReturn(geminiResult("SPAM", 0.92, "promoción no solicitada"));
 
         EmailStatus status = classificationService.classify(email);
@@ -53,7 +56,7 @@ class EmailClassificationServiceTest {
     @Test
     void highConfidenceNonSpam_classifiesAsValid() {
         Email email = email();
-        when(geminiService.classifyEmail(any(), any(), any()))
+        when(geminiService.classifyEmail(any(), any(), any(), anyList()))
                 .thenReturn(geminiResult("VALID", 0.95, "RFQ de cotización de sensores"));
 
         EmailStatus status = classificationService.classify(email);
@@ -64,7 +67,7 @@ class EmailClassificationServiceTest {
     @Test
     void belowThreshold_classifiesAsUncertainRegardlessOfLabel() {
         Email email = email();
-        when(geminiService.classifyEmail(any(), any(), any()))
+        when(geminiService.classifyEmail(any(), any(), any(), anyList()))
                 .thenReturn(geminiResult("SPAM", 0.50, "no está claro"));
 
         EmailStatus status = classificationService.classify(email);
@@ -75,7 +78,7 @@ class EmailClassificationServiceTest {
     @Test
     void exactlyAtThreshold_0_85_isTreatedAsAutomatic() {
         Email email = email();
-        when(geminiService.classifyEmail(any(), any(), any()))
+        when(geminiService.classifyEmail(any(), any(), any(), anyList()))
                 .thenReturn(geminiResult("VALID", 0.85, "límite exacto"));
 
         EmailStatus status = classificationService.classify(email);
@@ -89,7 +92,7 @@ class EmailClassificationServiceTest {
         Email email = email();
         ObjectNode errorNode = objectMapper.createObjectNode();
         errorNode.put("error", "modelo no disponible");
-        when(geminiService.classifyEmail(any(), any(), any())).thenReturn(errorNode);
+        when(geminiService.classifyEmail(any(), any(), any(), anyList())).thenReturn(errorNode);
 
         EmailStatus status = classificationService.classify(email);
 
@@ -100,12 +103,55 @@ class EmailClassificationServiceTest {
     @Test
     void geminiThrowsException_classifiesAsUncertain() {
         Email email = email();
-        when(geminiService.classifyEmail(any(), any(), any()))
+        when(geminiService.classifyEmail(any(), any(), any(), anyList()))
                 .thenThrow(new RuntimeException("Vertex AI timeout"));
 
         EmailStatus status = classificationService.classify(email);
 
         assertThat(status).isEqualTo(EmailStatus.UNCERTAIN);
+    }
+
+    @Test
+    void uncertainWithHighConfidence_staysUncertain_notValid() {
+        // Caso real (email 498): Gemini dijo UNCERTAIN con 0.95 y el código lo guardaba como VALID.
+        Email email = email();
+        when(geminiService.classifyEmail(any(), any(), any(), anyList()))
+                .thenReturn(geminiResult("UNCERTAIN", 0.95, "el cuerpo es vago y no especifica productos"));
+
+        EmailStatus status = classificationService.classify(email);
+
+        assertThat(status).isEqualTo(EmailStatus.UNCERTAIN);
+        assertThat(email.getStatus()).isEqualTo(EmailStatus.UNCERTAIN);
+    }
+
+    @Test
+    void validRfqLabel_fromPrompt_classifiesAsValid() {
+        Email email = email();
+        when(geminiService.classifyEmail(any(), any(), any(), anyList()))
+                .thenReturn(geminiResult("VALID_RFQ", 0.97, "lista de productos en el PDF adjunto"));
+
+        assertThat(classificationService.classify(email)).isEqualTo(EmailStatus.VALID);
+    }
+
+    @Test
+    void unknownLabel_classifiesAsUncertain() {
+        Email email = email();
+        when(geminiService.classifyEmail(any(), any(), any(), anyList()))
+                .thenReturn(geminiResult("OTRO", 0.99, "?"));
+
+        assertThat(classificationService.classify(email)).isEqualTo(EmailStatus.UNCERTAIN);
+    }
+
+    @Test
+    void attachmentsArePassedToGemini() {
+        Email email = email();
+        var pdf = new GeminiService.FilePart("SC_02.pdf", "application/pdf", new byte[]{1, 2, 3});
+        when(geminiService.classifyEmail(any(), any(), any(), anyList()))
+                .thenReturn(geminiResult("VALID_RFQ", 0.96, "RFQ en el adjunto"));
+
+        classificationService.classify(email, java.util.List.of(pdf));
+
+        verify(geminiService).classifyEmail(eq("comprador@mineraejemplo.pe"), any(), any(), eq(java.util.List.of(pdf)));
     }
 
     private Email email() {

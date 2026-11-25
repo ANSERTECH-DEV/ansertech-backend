@@ -51,10 +51,16 @@ public class GeminiService {
               "client_company": "empresa detectada o null"
             }
 
+            Reglas:
+            - Si hay archivos adjuntos (PDF o imágenes), forman parte del correo: analízalos junto con el cuerpo.
+              Un cuerpo breve como "adjunto la solicitud" con un adjunto que lista productos/cantidades es VALID_RFQ.
+            - Usa UNCERTAIN solo cuando, aun revisando los adjuntos, no se pueda determinar si es una solicitud de cotización.
+
             CORREO A ANALIZAR:
             De: %s
             Asunto: %s
             Cuerpo: %s
+            Adjuntos: %s
             """;
 
     private static final String EXTRACTION_PROMPT = """
@@ -89,45 +95,71 @@ public class GeminiService {
             """;
 
 
+    /** Archivo que se envía a Gemini junto con el texto (PDF o imagen). */
+    public record FilePart(String name, String mimeType, byte[] data) {}
+
     public JsonNode classifyEmail(String sender, String subject, String body) {
-        String prompt = String.format(CLASSIFICATION_PROMPT, sender, subject,
-                body != null ? body.substring(0, Math.min(body.length(), 3000)) : "");
-        return callGemini(prompt);
+        return classifyEmail(sender, subject, body, List.of());
+    }
+
+    /**
+     * Clasifica el correo. Si trae PDF o imágenes, Gemini también los ve: así un cuerpo vago con la solicitud
+     * en el adjunto se reconoce como RFQ. Si Gemini falla tras reintentar, devuelve un nodo {"error": ...}.
+     */
+    public JsonNode classifyEmail(String sender, String subject, String body, List<FilePart> files) {
+        List<FilePart> safeFiles = files != null ? files : List.of();
+        String prompt = String.format(CLASSIFICATION_PROMPT, sender, subject, truncate(body, 3000), describeFiles(safeFiles));
+        try {
+            return parseJson(callWithRetry(() -> safeFiles.isEmpty()
+                    ? generateJson(prompt) : generateJsonWithFiles(safeFiles, prompt), "la clasificación del correo"));
+        } catch (GeminiCallException e) {
+            return objectMapper.createObjectNode().put("error", e.getMessage());
+        }
     }
 
     public JsonNode extractRfq(String content) {
-        String prompt = String.format(EXTRACTION_PROMPT,
-                content.substring(0, Math.min(content.length(), 8000)));
-        return callGemini(prompt);
+        String prompt = String.format(EXTRACTION_PROMPT, truncate(content, 8000));
+        try {
+            return parseJson(callWithRetry(() -> generateJson(prompt), "la extracción del RFQ"));
+        } catch (GeminiCallException e) {
+            return objectMapper.createObjectNode().put("error", e.getMessage());
+        }
     }
 
-    public JsonNode extractRfqFromBytes(byte[] fileBytes, String mimeType, String additionalText) {
+    /**
+     * Extracción multimodal: todos los archivos van en la misma petición, seguidos del texto del correo.
+     * Si Gemini rechaza los archivos (error no transitorio) se intenta solo con el texto; si el problema es de
+     * cuota o disponibilidad, no se insiste y se devuelve el nodo de error.
+     */
+    public JsonNode extractRfqFromFiles(List<FilePart> files, String additionalText) {
+        if (files == null || files.isEmpty()) return extractRfq(additionalText);
+        String prompt = String.format(EXTRACTION_PROMPT,
+                "[Archivos adjuntos: " + describeFiles(files) + " — ver contenido multimodal]\n"
+                        + truncate(additionalText, 8000));
         try {
-            GenerativeModel model = new GenerativeModel(modelName, vertexAI);
-            String textPrompt = String.format(EXTRACTION_PROMPT,
-                    "[Archivo adjunto analizado — ver contenido multimodal]\n" + additionalText);
-
-            List<Part> parts = new ArrayList<>();
-            parts.add(Part.newBuilder()
-                    .setInlineData(Blob.newBuilder()
-                            .setMimeType(mimeType)
-                            .setData(ByteString.copyFrom(fileBytes))
-                            .build())
-                    .build());
-            parts.add(Part.newBuilder().setText(textPrompt).build());
-
-            Content content = Content.newBuilder()
-                    .setRole("user")
-                    .addAllParts(parts)
-                    .build();
-
-            GenerateContentResponse response = model.generateContent(List.of(content));
-            String rawJson = ResponseHandler.getText(response);
-            return parseJson(rawJson);
-        } catch (IOException e) {
-            log.error("Error en extracción multimodal: {}", e.getMessage());
-            return callGemini(String.format(EXTRACTION_PROMPT, additionalText));
+            return parseJson(callWithRetry(() -> generateJsonWithFiles(files, prompt), "la extracción del RFQ desde adjuntos"));
+        } catch (GeminiCallException e) {
+            if (e.isRetryable()) {
+                return objectMapper.createObjectNode().put("error", e.getMessage());
+            }
+            log.warn("Gemini no pudo leer los adjuntos ({}); se extrae solo del texto del correo", e.getMessage());
+            return extractRfq(additionalText);
         }
+    }
+
+    private static String describeFiles(List<FilePart> files) {
+        if (files == null || files.isEmpty()) return "ninguno";
+        StringBuilder sb = new StringBuilder();
+        for (FilePart f : files) {
+            if (sb.length() > 0) sb.append(", ");
+            sb.append(f.name()).append(" (").append(f.mimeType()).append(")");
+        }
+        return sb.toString();
+    }
+
+    private static String truncate(String text, int max) {
+        if (text == null) return "";
+        return text.length() <= max ? text : text.substring(0, max);
     }
 
     private static final String ANALYSIS_SIMPLE_PROMPT = """
@@ -231,18 +263,44 @@ public class GeminiService {
     }
 
     private String generateStockMatchWithRetry(String prompt) {
+        try {
+            return callWithRetry(() -> generateJson(prompt), "el análisis de stock");
+        } catch (GeminiCallException e) {
+            throw new StockMatchException(e.getMessage(), e.getCause());
+        }
+    }
+
+    @FunctionalInterface
+    interface GeminiCall {
+        String run() throws Exception;
+    }
+
+    /** Fallo definitivo de una llamada a Gemini (tras reintentar si era transitorio). */
+    static class GeminiCallException extends RuntimeException {
+        private final boolean retryable;
+        GeminiCallException(String message, Throwable cause, boolean retryable) {
+            super(message, cause);
+            this.retryable = retryable;
+        }
+        boolean isRetryable() { return retryable; }
+    }
+
+    /** Reintenta ante 429/503/timeout de Vertex AI con las esperas de {@link #STOCK_MATCH_BACKOFF_MS}. */
+    String callWithRetry(GeminiCall call, String what) {
         for (int attempt = 0; ; attempt++) {
             try {
-                return generateJson(prompt);
+                return call.run();
+            } catch (GeminiCallException e) {
+                throw e;
             } catch (Exception e) {
                 boolean retryable = isRetryable(e);
                 if (!retryable || attempt >= STOCK_MATCH_BACKOFF_MS.length) {
-                    log.error("Error en matching de stock (intento {}): {}", attempt + 1, e.getMessage());
-                    throw new StockMatchException(friendlyMessage(e, retryable), e);
+                    log.error("Gemini falló en {} (intento {}): {}", what, attempt + 1, e.getMessage());
+                    throw new GeminiCallException(friendlyMessage(e, retryable, what), e, retryable);
                 }
                 long wait = STOCK_MATCH_BACKOFF_MS[attempt];
-                log.warn("Matching de stock: Gemini no disponible ({}). Reintento {} de {} en {} s",
-                        e.getMessage(), attempt + 1, STOCK_MATCH_BACKOFF_MS.length, wait / 1000);
+                log.warn("Gemini no disponible en {} ({}). Reintento {} de {} en {} s",
+                        what, e.getMessage(), attempt + 1, STOCK_MATCH_BACKOFF_MS.length, wait / 1000);
                 sleep(wait);
             }
         }
@@ -258,12 +316,30 @@ public class GeminiService {
         return ResponseHandler.getText(model.generateContent(prompt));
     }
 
+    /** Igual que {@link #generateJson} pero con archivos (inlineData) antes del texto. Protegido para tests. */
+    protected String generateJsonWithFiles(List<FilePart> files, String prompt) throws IOException {
+        GenerationConfig config = GenerationConfig.newBuilder()
+                .setResponseMimeType("application/json")
+                .setTemperature(0f)
+                .build();
+        List<Part> parts = new ArrayList<>();
+        for (FilePart f : files) {
+            parts.add(Part.newBuilder()
+                    .setInlineData(Blob.newBuilder().setMimeType(f.mimeType()).setData(ByteString.copyFrom(f.data())).build())
+                    .build());
+        }
+        parts.add(Part.newBuilder().setText(prompt).build());
+        Content content = Content.newBuilder().setRole("user").addAllParts(parts).build();
+        GenerativeModel model = new GenerativeModel(modelName, vertexAI).withGenerationConfig(config);
+        return ResponseHandler.getText(model.generateContent(List.of(content)));
+    }
+
     protected void sleep(long millis) {
         try {
             Thread.sleep(millis);
         } catch (InterruptedException ie) {
             Thread.currentThread().interrupt();
-            throw new StockMatchException("Matching de stock interrumpido", ie);
+            throw new GeminiCallException("Llamada a Gemini interrumpida", ie, false);
         }
     }
 
@@ -280,7 +356,7 @@ public class GeminiService {
         return false;
     }
 
-    private static String friendlyMessage(Throwable e, boolean retryable) {
+    private static String friendlyMessage(Throwable e, boolean retryable, String what) {
         String text = String.valueOf(e.getMessage());
         if (text.contains("RESOURCE_EXHAUSTED") || text.contains("ResourceExhausted")) {
             return "Gemini (Vertex AI) alcanzó su límite de uso. Reintenta en unos minutos.";
@@ -288,7 +364,7 @@ public class GeminiService {
         if (retryable) {
             return "Gemini (Vertex AI) no está disponible en este momento. Reintenta en unos minutos.";
         }
-        return "No se pudo completar el análisis de stock con Gemini: " + text;
+        return "No se pudo completar " + what + " con Gemini: " + text;
     }
 
     private String buildRfqItemsJson(List<RfqItem> items) throws Exception {
