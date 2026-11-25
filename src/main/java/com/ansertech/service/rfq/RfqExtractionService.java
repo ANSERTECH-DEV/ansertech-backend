@@ -7,7 +7,6 @@ import com.ansertech.domain.enums.RfqStatus;
 import com.ansertech.domain.enums.RfqType;
 import com.ansertech.repository.RfqRepository;
 import com.ansertech.service.ai.GeminiService;
-import com.ansertech.service.email.EmailPollingService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
@@ -28,35 +27,32 @@ public class RfqExtractionService {
 
     private final GeminiService geminiService;
     private final RfqRepository rfqRepository;
-    private final EmailPollingService pollingService;
     private final ObjectMapper objectMapper;
     private final RfqStockCheckQueueService stockCheckQueueService;
 
+    /**
+     * Extrae el RFQ con Gemini. Si el correo trae PDF/imágenes válidos (ya filtrados y descargados por
+     * AttachmentLoader), se envían todos junto con el cuerpo; si no, se usa solo el texto.
+     */
     @Transactional
-    public Rfq extractAndSave(Email email, List<EmailPollingService.AttachmentInfo> attachments) {
+    public Rfq extractAndSave(Email email, List<GeminiService.FilePart> files) {
         try {
-            JsonNode extracted;
             String bodyWithContext = buildBodyWithContext(email);
-
-            if (!attachments.isEmpty()) {
-                EmailPollingService.AttachmentInfo first = attachments.get(0);
-                boolean isSupportedMime = first.mimeType().equals("application/pdf")
-                        || first.mimeType().startsWith("image/");
-
-                if (isSupportedMime) {
-                    byte[] bytes = pollingService.fetchAttachment(email.getExternalMessageId(), first.id());
-                    extracted = geminiService.extractRfqFromBytes(bytes, first.mimeType(), bodyWithContext);
-                    log.info("RFQ extraído desde adjunto {} ({})", first.name(), first.mimeType());
-                } else {
-                    extracted = geminiService.extractRfq(bodyWithContext);
-                }
+            JsonNode extracted;
+            if (files != null && !files.isEmpty()) {
+                extracted = geminiService.extractRfqFromFiles(files, bodyWithContext);
+                log.info("RFQ extraído desde {} adjunto(s): {}", files.size(),
+                        files.stream().map(GeminiService.FilePart::name).toList());
             } else {
                 extracted = geminiService.extractRfq(bodyWithContext);
             }
 
             if (extracted.has("error")) {
-                log.warn("Error extrayendo RFQ del email {}", email.getId());
-                return buildFallbackRfq(email);
+                log.warn("Error extrayendo RFQ del email {}: {}", email.getId(), extracted.path("error").asText());
+                // Antes este RFQ de respaldo no se encolaba y quedaba en PROCESSING para siempre.
+                Rfq fallback = buildFallbackRfq(email);
+                scheduleStockCheck(fallback.getId());
+                return fallback;
             }
 
             Rfq saved = buildAndSaveRfq(email, extracted);

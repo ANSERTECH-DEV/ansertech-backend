@@ -33,4 +33,15 @@ public interface EmailRepository extends JpaRepository<Email, Long> {
     @Query("SELECT e FROM Email e WHERE COALESCE(e.createdAt, e.processedAt) >= :from "
             + "AND COALESCE(e.createdAt, e.processedAt) < :toExclusive ORDER BY e.createdAt ASC")
     List<Email> findForReport(@Param("from") LocalDateTime from, @Param("toExclusive") LocalDateTime toExclusive);
+
+    /**
+     * Correos que quedaron a medias (el proceso se cortó: reinicio, Cloud Run sin CPU...): siguen en PENDING o
+     * PROCESSING, o quedaron VALID sin RFQ. Solo los creados en [since, before) para no tocar uno en curso.
+     */
+    @Query("SELECT e FROM Email e WHERE e.createdAt >= :since AND e.createdAt < :before AND ("
+            + "e.status IN (com.ansertech.domain.enums.EmailStatus.PENDING, com.ansertech.domain.enums.EmailStatus.PROCESSING) "
+            + "OR (e.status = com.ansertech.domain.enums.EmailStatus.VALID "
+            + "AND NOT EXISTS (SELECT r.id FROM Rfq r WHERE r.email = e))) ORDER BY e.createdAt ASC")
+    List<Email> findIncomplete(@Param("since") LocalDateTime since, @Param("before") LocalDateTime before,
+                               org.springframework.data.domain.Pageable pageable);
 }

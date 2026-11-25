@@ -76,7 +76,8 @@ public class GraphPollingService implements EmailPollingService {
                         attachment.getId(),
                         attachment.getName(),
                         attachment.getContentType(),
-                        attachment.getSize() != null ? attachment.getSize().longValue() : 0L
+                        attachment.getSize() != null ? attachment.getSize().longValue() : 0L,
+                        Boolean.TRUE.equals(attachment.getIsInline())
                 ));
             }
         }

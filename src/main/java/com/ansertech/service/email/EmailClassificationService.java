@@ -12,6 +12,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
+import java.util.List;
 
 @Slf4j
 @Service
@@ -26,13 +27,21 @@ public class EmailClassificationService {
 
     @Transactional
     public EmailStatus classify(Email email) {
+        return classify(email, List.of());
+    }
+
+    /** Clasifica el correo; los PDF/imágenes adjuntos (ya filtrados y descargados) también se envían a Gemini. */
+    @Transactional
+    public EmailStatus classify(Email email, List<GeminiService.FilePart> files) {
         try {
-            log.info("Clasificando email id={} de {}", email.getId(), email.getSenderEmail());
+            log.info("Clasificando email id={} de {} ({} adjunto(s) para la IA)", email.getId(), email.getSenderEmail(),
+                    files != null ? files.size() : 0);
 
             JsonNode result = geminiService.classifyEmail(
                     email.getSenderEmail(),
                     email.getSubject(),
-                    email.getBody()
+                    email.getBody(),
+                    files != null ? files : List.of()
             );
 
             if (result.has("error")) {
@@ -51,12 +60,21 @@ public class EmailClassificationService {
             email.setClassificationReason(reason);
             email.setProcessedAt(LocalDateTime.now());
 
+            // La etiqueta de Gemini manda: antes cualquier cosa que no fuera SPAM (incluido UNCERTAIN con
+            // confianza alta) terminaba en VALID. El umbral solo decide si VALID/SPAM es automático.
+            String label = classification.trim().toUpperCase();
+            boolean isSpam = label.equals("SPAM");
+            boolean isRfq = label.equals("VALID_RFQ") || label.equals("VALID");
             EmailStatus status;
-            if (confidence < confidenceThreshold) {
+            if (!isSpam && !isRfq) {
+                status = EmailStatus.UNCERTAIN;
+                log.info("Email {} → UNCERTAIN (Gemini: {}, confianza {})",
+                        email.getId(), classification, String.format("%.2f", confidence));
+            } else if (confidence < confidenceThreshold) {
                 status = EmailStatus.UNCERTAIN;
                 log.info("Email {} → UNCERTAIN (confianza {} < {})",
                         email.getId(), String.format("%.2f", confidence), confidenceThreshold);
-            } else if ("SPAM".equals(classification)) {
+            } else if (isSpam) {
                 status = EmailStatus.SPAM;
                 log.info("Email {} → SPAM (confianza {})", email.getId(), String.format("%.2f", confidence));
             } else {

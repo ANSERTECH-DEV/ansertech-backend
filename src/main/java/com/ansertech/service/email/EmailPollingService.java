@@ -19,10 +19,15 @@ public interface EmailPollingService {
             List<String> ccAddresses
     ) {}
 
+    /**
+     * @param inline true si Outlook lo marca como incrustado en el cuerpo (p. ej. el logo de la firma).
+     *               En attachments_json antiguos no existe y se lee como false.
+     */
     record AttachmentInfo(
             String id,
             String name,
             String mimeType,
-            long size
+            long size,
+            boolean inline
     ) {}
 }
